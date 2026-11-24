@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+from .._version import __version__
 
 
 def execute(project, stage):
@@ -75,7 +76,7 @@ def execute(project, stage):
                 records = [infer(f"F{i+1}", len(axis)-(3-i)*spec.horizon) for i in range(3)]
                 future = infer("FUTURO", len(axis))
                 history = worker.combine_history(root)
-                write(root / "resultados_x0.json", dict(version="0.11.0", producer="model-arena-sdk 0.1.0rc1", corrida=run.name,
+                write(root / "resultados_x0.json", dict(version="0.11.0", producer=f"model-arena-sdk {__version__}", corrida=run.name,
                       horizonte=spec.horizon, ajustes=records, futuro=future,
                       muestra=dict(entrenadas=len(seen), atipicas_zero_shot=len(atypical)),
                       config=cfg, training_history=str(history.relative_to(root)),

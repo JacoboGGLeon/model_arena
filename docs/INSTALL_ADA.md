@@ -4,9 +4,9 @@ Python soportado inicialmente: 3.11 y 3.12. La plataforma observada utiliza Pyth
 
 ## Paquete y configuración
 
-- Distribución: `model-arena-sdk` (nombre propuesto; publicación pendiente).
+- Distribución: `model-arena-sdk`.
 - Import: `model_arena`.
-- Repositorio previsto: `JacoboGGLeon/model_arena`.
+- Repositorio: `JacoboGGLeon/model_arena`.
 - Configuración corporativa: archivos locales de despliegue; no forman parte del paquete público.
 
 No modifiques los índices corporativos de pip. La instalación utiliza su configuración existente. No ejecutes `pip config list` en un notebook compartido ni incluyas URLs autenticadas en sus celdas.
@@ -14,13 +14,13 @@ No modifiques los índices corporativos de pip. La instalación utiliza su confi
 Cuando Artifactory tenga la versión publicada:
 
 ```bash
-python -m pip install 'model-arena-sdk[mac]==0.1.0rc1'
+python -m pip install 'model-arena-sdk==0.1'
 ```
 
 Si aún no la replica, descarga el wheel y usa:
 
 ```bash
-python -m pip install './dist/model_arena_sdk-0.1.0rc1-py3-none-any.whl[mac]'
+python -m pip install './dist/model_arena_sdk-0.1-py3-none-any.whl'
 ```
 
 Las dependencias siguen resolviéndose por los índices corporativos. El wheel no incluye PyTorch ni dependencias de terceros. No se fuerza un índice PyTorch público, no se desinstala el entorno y no se reutiliza el venv de otro bundle.
@@ -28,7 +28,7 @@ Las dependencias siguen resolviéndose por los índices corporativos. El wheel n
 Para abrir únicamente el monitor:
 
 ```bash
-python -m pip install './dist/model_arena_sdk-0.1.0rc1-py3-none-any.whl[monitor]'
+python -m pip install './dist/model_arena_sdk-0.1-py3-none-any.whl'
 ```
 
 ## Notebooks
@@ -38,3 +38,5 @@ Ejecuta `10_ADA_Slow_System_End_to_End.ipynb` desde la carpeta ADA entregada. Lo
 `00_ADA_Fast_System_Observatory.ipynb` abre Athena sin necesitar el directorio del run. Solo requiere la configuración de publicación y permisos de lectura.
 
 La réplica del paquete desde PyPI al repositorio corporativo depende de la configuración y políticas de Artifactory. Publicar en PyPI no demuestra por sí solo que ADA ya pueda resolver esa versión; la alternativa del wheel permite comprobar el mismo artefacto sin cambiar los índices.
+
+Desde 0.1 la instalación predeterminada incluye entrenamiento, AWS y monitor. Los extras se conservan solo por compatibilidad; no reducen las dependencias de la instalación base. Consultar resultados mantiene imports diferidos y no inicializa CUDA.

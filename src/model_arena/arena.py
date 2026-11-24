@@ -12,6 +12,7 @@ from .contracts import (ArenaSpec, ModelSpec, PanelSchema, RunRef, StudyResult, 
 from .data import PreparedData, prepare_panel, future_dates, pinball, scale_for
 from .models.base import ModelRegistry
 from .results import Results
+from ._version import __version__
 from .storage import (signature, write_json, read_json, write_table, read_table,
                       publish_directory, verify_manifest, digest)
 
@@ -68,7 +69,7 @@ class ModelArena:
         path = Path(self.spec.artifacts).resolve() / run_id(prefix)
         path.mkdir(parents=True)
         write_json(path / "identity.json", {"signature": identity, "data": data.signature,
-                                            "spec": self.describe(), "version": "0.1.0rc1"})
+                                            "spec": self.describe(), "version": __version__})
         inventory = data.metadata.rename(columns={data.schema.id_col: "entity"})
         write_table(path / "inventory.json", inventory)
         write_json(path / "status.json", {"status": "RUNNING"})

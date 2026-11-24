@@ -1,5 +1,5 @@
 {
-  "version": "0.1.0rc1",
+  "version": "0.1",
   "python": "3.12.14",
   "tests": 37,
   "failures": 0,
@@ -13,8 +13,7 @@
     "notebook_syntax": "passed",
     "generic_demo_execution": "passed",
     "local_mac_cpu_pipeline": "passed",
-    "ada_live": "not_run",
-    "github_push": "repository_created_source_prepared_for_upload",
-    "pypi_upload": "pending_trusted_publisher"
-  }
+    "ada_live": "not_run"
+  },
+  "release_status_at_validation": "0.1 pending; 0.1.0rc1 previously published"
 }

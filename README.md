@@ -2,7 +2,10 @@
 
 Explicit forecasting competition and observable learning histories.
 
-Release candidate **0.1.0rc1**. Source repository: https://github.com/JacoboGGLeon/model_arena. PyPI publication is pending Trusted Publisher registration. The import remains `model_arena`; the distribution name avoids the occupied `model-arena` project. This release includes a generic forecasting core and a MAC migration adapter. Local synthetic tests validate the engine layouts; live ADA validation remains pending.
+Version **0.1**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1"`.
+Source: https://github.com/JacoboGGLeon/model_arena · PyPI: https://pypi.org/project/model-arena-sdk/.
+
+The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. Local synthetic tests validate the engine layouts; live ADA validation remains pending.
 
 ```python
 from model_arena import ModelArena
@@ -24,20 +27,20 @@ publication = arena.publish(release, destination='publications')
 
 ## Installation
 
-Install the built wheel with the extras you need. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
+The default installation includes the complete forecasting and monitoring runtime. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
 
 ```bash
-python -m pip install 'model-arena-sdk[train,aws,monitor]==0.1.0rc1'
+python -m pip install "model-arena-sdk==0.1"
 ```
 
-The command above requires the release to exist in your configured package index. Until publication, use the provided wheel path instead of a project name. Install your approved CUDA-compatible PyTorch build through the configured ADA indexes before installing the training extra; no public index is forced by this package.
+In ADA, keep the existing Artifactory indexes and approved CUDA-compatible PyTorch installation. No package index or CUDA build is forced by the SDK. Default installation includes PyTorch and the dashboard dependencies; imports remain lazy and reading results does not initialize CUDA. Existing extras remain available for compatibility.
 
 ## Development
 
 ```bash
-python -m pip install -e '.[dev,train,aws,monitor]'
+python -m pip install -e '.[dev]'
 python -m pytest
-python -m ruff check src tests
+python -m ruff check src/model_arena tests scripts --exclude _mac_runtime
 python -m build
 python -m twine check dist/*
 ```

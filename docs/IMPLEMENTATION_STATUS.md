@@ -1,6 +1,6 @@
 # Estado de implementación y límites de evidencia
 
-Esta entrega es un release candidate 0.1.0rc1 y separa dos rutas ejecutables:
+Esta entrega es un versión 0.1 y separa dos rutas ejecutables:
 
 1. **ModelArena**: núcleo genérico nuevo con contratos Pydantic, registro de modelos, datos tabulares, HPO explícito, CV, selección por entidad, fit/predict, curvas, guardado y publicación local/S3. Incluye TFT compacto de dimensiones de objetivos/features configurables y baseline de cuantiles históricos.
 2. **MacProject**: adaptador de migración con etapas explícitas que conserva el motor contable y el dashboard Athena de 0.13.1. Es la ruta del notebook ADA para preservar el caso de uso existente. Su implementación todavía contiene código de compatibilidad aislado; no se afirma que el perfil ya esté reescrito íntegramente sobre el core nuevo.

@@ -2,7 +2,7 @@
 
 ## Estado
 
-Repositorio creado: https://github.com/JacoboGGLeon/model_arena. La fuente se publica mediante la conexión de GitHub. La publicación en PyPI requiere registrar el Trusted Publisher y verificar el workflow; no se acredita una publicación PyPI hasta obtener su recibo.
+Repositorio creado: https://github.com/JacoboGGLeon/model_arena. La fuente se publica mediante la conexión de GitHub. Trusted Publishing está configurado y la versión candidata anterior se publicó correctamente. La versión 0.1 se distribuye sin extras obligatorios; cada publicación se acredita con su recibo de GitHub Actions y PyPI.
 
 ## GitHub
 
@@ -12,9 +12,9 @@ Una vez conectado GitHub, crear el repositorio, subir el commit validado y compr
 
 ## PyPI
 
-`model-arena` ya tiene distribuciones de otro proyecto. Se propone `model-arena-sdk` conservando el import `model_arena`. La disponibilidad definitiva del nombre se comprueba al registrar el proyecto.
+`model-arena` ya tiene distribuciones de otro proyecto. `model-arena-sdk` ya está registrado y conserva el import `model_arena`.
 
-Configurar un Pending Trusted Publisher en la cuenta PyPI propietaria:
+Trusted Publisher configurado para este proyecto:
 
 - Project: model-arena-sdk
 - Owner: JacoboGGLeon
@@ -24,7 +24,7 @@ Configurar un Pending Trusted Publisher en la cuenta PyPI propietaria:
 
 La configuración de confianza debe corresponder exactamente al repositorio y workflow publicados. No se necesita pegar tokens en notebooks ni commits.
 
-Crear el entorno GitHub `pypi` y publicar la release con tag `v0.1.0rc1`. El workflow primero ejecuta tests, comprueba tag/versión, construye wheel/sdist y valida sus metadatos. Un job independiente publica esos artefactos con OIDC.
+Crear el entorno GitHub `pypi` y publicar la release con tag `v0.1`. El workflow primero ejecuta tests, comprueba tag/versión, construye wheel/sdist y valida sus metadatos. Un job independiente publica esos artefactos con OIDC.
 
 Tras el éxito del workflow, comprobar la versión, el nombre y los hashes de los artefactos disponibles en PyPI. Después comprobar su resolución desde ADA/Artifactory.
 
