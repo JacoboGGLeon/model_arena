@@ -7,6 +7,8 @@ import numpy as np
 import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
+from model_arena.disk import check_space
+from model_arena.loss_store import detail_files,read_batches
 from .common import sha,source_signature,shard
 from .schemas import SCHEMAS,ENGINE2_COLUMNS,athena_type
 from .historical_sigma import expanding_sigma
@@ -40,6 +42,7 @@ class Writer:
   index=self.seq.get(key,0);self.seq[key]=index+1
   relative=Path(name)/f'run_id={self.run_id}'/f'publication_id={self.pub_id}'/f'segment={segment}'/f'part-{index:05d}.parquet'
   p=self.folder/'datasets'/relative;p.parent.mkdir(parents=True,exist_ok=True)
+  check_space(p.parent,extra_bytes=table.nbytes*2,stage='publicación '+name)
   pq.write_table(table,p,compression='zstd',row_group_size=65536)
   self.entries.append(dict(dataset=name,segment=segment,path=str(p.relative_to(self.folder)),rows=table.num_rows,sha256=sha(p)))
  def flush(self):
@@ -132,7 +135,7 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
  report=json.loads((root/'resultados_x0.json').read_text())
  if report.get('version')!='0.11.0':raise ValueError('Adaptador para corrida Arena 0.11.0; no convierte silenciosamente otro protocolo')
  source=run/'source/engine1.parquet';definitions=json.loads((root/'candidatos.json').read_text())
- paths=[*sorted((root/'loss_entities').glob('*.csv')),source,root/'resultados_x0.json',root/'inventory.parquet',root/'candidatos.json',*sorted((root/'predicciones').glob('*.parquet')),*sorted(root.glob('winners_*.parquet'))]
+ paths=[*detail_files(root/'loss_entities'),source,root/'resultados_x0.json',root/'inventory.parquet',root/'candidatos.json',*sorted((root/'predicciones').glob('*.parquet')),*sorted(root.glob('winners_*.parquet'))]
  if training_path:paths.append(Path(training_path).resolve())
  raw_roots=list(dict.fromkeys([p for p in [run/'engine2',run/'engine3',root/'engine2',root/'engine3',*[Path(p).expanduser().resolve() for p in delivery_dirs]] if p.is_dir()]))
  raw_files=[(i,p,base) for i,base in enumerate(raw_roots) for p in sorted(base.rglob('*')) if p.is_file()]
@@ -260,11 +263,17 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
     col='fixed_'+split+'_'+target
     if col in train.columns:
      writer.write('training_learning',train.filter(pl.col(col).is_not_null()).select('candidate','fold','epoch',pl.lit(target).alias('target'),pl.lit(split).alias('split'),pl.col(col).alias('loss')))
- for detail in sorted((root/'loss_entities').glob('*.csv')):
-  writer.write('training_entities',pl.read_csv(detail))
+ for detail in detail_files(root/'loss_entities'):
+  for batch in read_batches(detail):
+   writer.write('training_entities',batch)
  raw=[]
  for i,p,base in raw_files:
-  rel=Path('deliveries_original')/f'{i:02d}_{base.name}'/p.relative_to(base);dest=out/rel;dest.parent.mkdir(parents=True,exist_ok=True);shutil.copyfile(p,dest)
+  rel=Path('deliveries_original')/f'{i:02d}_{base.name}'/p.relative_to(base);dest=out/rel;dest.parent.mkdir(parents=True,exist_ok=True)
+  try:
+   dest.hardlink_to(p)
+  except OSError:
+   check_space(dest.parent,extra_bytes=p.stat().st_size,stage='copia de entrega')
+   shutil.copyfile(p,dest)
   item=dict(path=str(rel),source=str(p),sha256=sha(p),bytes=p.stat().st_size)
   if p.suffix=='.parquet':
    sc=pq.read_schema(p);item.update(columns=sc.names,arrow_schema_b64=base64.b64encode(sc.serialize().to_pybytes()).decode())

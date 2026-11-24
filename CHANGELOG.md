@@ -1,0 +1,15 @@
+# Changelog
+
+## 0.1.1
+
+- Store per-account epoch losses and per-fit histories as atomic Zstandard Parquet, preserving Float64.
+- Read detailed loss datasets in batches for publication; reuse immutable raw deliveries with hardlinks when possible.
+- Add configurable disk reserve checks, one-writer project locks, and exact-parameter retry for disk-interrupted candidates.
+- Package the local read-only loss dashboard with input/fold/budget/account filters, chart/table views and Parquet download.
+- Provide explicit verified conversion for unpublished SDK 0.1 runs, retaining completed weights, predictions and HPO state.
+- Keep model mathematics, scaling, winner selection and accounting alert rules unchanged.
+- Update installed-SDK notebooks to 0.1.1 and test installed wheels in CI before publishing.
+
+## 0.1
+
+Initial complete SDK installation with generic forecasting APIs, MAC compatibility profile and Observatory.

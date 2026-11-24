@@ -1,6 +1,7 @@
 """Ingesta original Engine 1, aislada de los monitores y entrenadores anteriores."""
 from pathlib import Path
 import hashlib,json,sys,time
+from model_arena.disk import check_space
 ROOT=Path(__file__).resolve().parent
 sys.path[:0]=[str(ROOT/'visor'),*(str(p) for p in (ROOT/'libraries').glob('*/src'))]
 from workspace import dump,canonical_history
@@ -43,6 +44,7 @@ def execute(run,config,stage,device='cuda',resume=True):
  cal.take(axis);cal.after(axis[-1],cfg['model']['horizon'])
  if not np.isfinite(frame.select('balance','variation','fx').to_numpy()).all() or frame.filter(pl.col('fx')<=0).height:raise ValueError('Importe, variación o FX inválido')
  frame=frame.sort('account_id','date');(run/'source').mkdir(exist_ok=True)
+ check_space(run,extra_bytes=frame.estimated_size()*2,stage='guardar Engine 1')
  frame.write_parquet(run/'source/engine1.parquet',compression='zstd')
  dump(run/'source/operational_axis.json',dict(dates=axis,source='authoritative calendar intersect Engine1 operational dates before selection'))
  outputs=[p for p in (run/'source').glob('*') if p.is_file()]

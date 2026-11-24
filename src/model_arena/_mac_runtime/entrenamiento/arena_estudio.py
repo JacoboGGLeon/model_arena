@@ -2,13 +2,15 @@
 from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
-import csv
 import json
 import pickle
 import numpy as np
 import optuna
 import polars as pl
 import torch
+from model_arena.disk import check_space, DiskSpaceError
+from model_arena.hpo_resume import enqueue_interrupted
+from model_arena.loss_store import write_parquet
 from entrenar_curvas import (ROOT, read, write, spec_for, execute, sha, make_frame)
 from agentic_forecasting import Series
 from agentic_forecasting.data import weighted_entropy
@@ -68,21 +70,23 @@ def loss_rows(frame, candidate, inventory):
 
 
 def persist_history(root, candidate, fold, rows):
-    directory = root/'loss';directory.mkdir(exist_ok=True)
-    path = directory/f'{candidate}_{fold}.csv';temp=path.with_suffix('.tmp')
-    with temp.open('w', newline='') as stream:
-        writer=csv.DictWriter(stream, fieldnames=['candidate','fold','epoch','train_loss','validation_loss','train_loss_saldo','train_loss_variacion','fixed_train_saldo','fixed_train_variacion','fixed_validation_saldo','fixed_validation_variacion'])
-        writer.writeheader()
-        writer.writerows(dict(candidate=candidate,fold=fold,**row) for row in rows)
-    temp.replace(path)
+    frame = pl.DataFrame([dict(candidate=candidate,fold=fold,**row) for row in rows],
+        schema_overrides={name:pl.Float64 for name in ["validation_loss","fixed_train_saldo",
+        "fixed_train_variacion","fixed_validation_saldo","fixed_validation_variacion"]})
+    write_parquet(frame, root/'loss'/f'{candidate}_{fold}.parquet')
 
 
 def combine_history(root):
-    frames=[pl.read_csv(path,schema_overrides={k:pl.Float64 for k in ['validation_loss','fixed_train_saldo','fixed_train_variacion','fixed_validation_saldo','fixed_validation_variacion']}) for path in sorted((root/'loss').glob('*.csv'))]
+    files = sorted((root/'loss').glob('*.parquet'))
+    stems = {p.stem for p in files}
+    frames = [pl.read_parquet(path) for path in files]
+    frames += [pl.read_csv(path,schema_overrides={k:pl.Float64 for k in
+        ['validation_loss','fixed_train_saldo','fixed_train_variacion','fixed_validation_saldo','fixed_validation_variacion']})
+        for path in sorted((root/'loss').glob('*.csv')) if path.stem not in stems]
     if not frames:raise ValueError('No se generaron curvas de entrenamiento')
-    combined=pl.concat(frames).sort('candidate','fold','epoch')
-    path=root/'training_history.parquet';temp=path.with_suffix('.tmp')
-    combined.write_parquet(temp,compression='zstd');temp.replace(path)
+    combined=pl.concat(frames,how='diagonal_relaxed').sort('candidate','fold','epoch')
+    path=root/'training_history.parquet'
+    write_parquet(combined,path)
     return path
 
 
@@ -100,6 +104,7 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
             raise ValueError('El checkpoint no contiene curvas de pérdida; usa una corrida de esta entrega')
         persist_history(root, candidate.id, fold, history)
         return model
+    check_space(root, stage=f"ajuste {candidate.id} {fold}")
     known = [Series(s.id,dates,s.values[:end],s.currency,s.budget,s.cohort) for s in seen]
     history = []
     def on_epoch(row):
@@ -107,9 +112,10 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
         persist_history(root, candidate.id, fold, history)
     print(f'Ajustando {candidate.id} · {fold} · {len(known)} cuentas', flush=True)
     from monitor_learning import build_monitor
-    monitor=build_monitor(known,seen,end,spec,candidate,device,calendar,fold,cfg,detail_path=root/"loss_entities"/f"{candidate.id}_{fold}.csv")
+    monitor=build_monitor(known,seen,end,spec,candidate,device,calendar,fold,cfg,detail_path=root/"loss_entities"/f"{candidate.id}_{fold}")
     model = fit_curves(known,end,spec,candidate,device,calendar,cfg,on_epoch=on_epoch,monitor=monitor)
     temp = path.with_suffix('.tmp')
+    check_space(root, extra_bytes=sum(v.numel()*v.element_size() for v in model.state_dict().values())*2, stage="checkpoint")
     torch.save(dict(state_dict=model.state_dict(),candidate=vars(candidate),spec=asdict(spec),
                     training_history=history,loss_monitor=monitor.selection,end=end,fold=fold,scaling='asinh(history/scale); forecast*scale',version='0.11.0',training_account_ids=[s.id for s in seen]),temp)
     temp.replace(path)
@@ -140,7 +146,7 @@ def run_study(run, config_path, device, *, stage="all"):
     write(root/'identidad.json',identity)
     execute(run,config_path,'ingesta',str(device))
     axis, seen, atypical, inventory = population(run,config,spec)
-    inventory.write_parquet(root/'inventory.parquet')
+    write_parquet(inventory,root/'inventory.parquet')
     calendar = read_calendar(ROOT/'data/calendar_authoritative.csv')
     dates = axis+calendar.after(axis[-1],spec.horizon)
     calendar.take(dates)
@@ -152,6 +158,7 @@ def run_study(run, config_path, device, *, stage="all"):
         sampler=pickle.loads(sampler_path.read_bytes()) if sampler_path.exists() else optuna.samplers.TPESampler(seed=spec.seed+cfg['inputs'].index(inp))
         study=optuna.create_study(study_name=inp,storage='sqlite:///'+str(root/'hpo.sqlite3'),load_if_exists=True,direction='minimize',sampler=sampler,pruner=optuna.pruners.NopPruner())
         def objective(trial):
+            check_space(root, stage=f'trial {inp} {trial.number}')
             candidate=candidate_for(trial,inp,cfg)
             trial.set_user_attr('candidate_id',candidate.id)
             write(root/f'{candidate.id}.json',vars(candidate))
@@ -163,14 +170,21 @@ def run_study(run, config_path, device, *, stage="all"):
                 else:
                     model=fit_saved(root,seen,dates,end,spec,candidate,fold,device,calendar,cfg)
                     frame=emit(model,seen,dates,end,spec,candidate,fold,device,calendar)
-                    temp=path.with_suffix('.tmp');frame.write_parquet(temp);temp.replace(path)
+                    write_parquet(frame,path)
                 scores.append(loss_rows(frame,candidate,inventory))
-            table=pl.concat(scores);table.write_parquet(root/f'{candidate.id}_scores.parquet')
+            table=pl.concat(scores);write_parquet(table,root/f'{candidate.id}_scores.parquet')
             return table['score'].mean()
-        # Interrupted trials can be retried with their exact parameters and paths.
-        for trial in study.get_trials(states=(optuna.trial.TrialState.RUNNING,)):
-            study.tell(trial.number,state=optuna.trial.TrialState.FAIL)
-            study.enqueue_trial(trial.params,user_attrs={'resume_candidate_id':trial.user_attrs.get('candidate_id',f'{inp}_T{trial.number:04d}')})
+        unguarded_objective=objective
+        def objective(trial, implementation=unguarded_objective):
+            try:
+                return implementation(trial)
+            except Exception as exc:
+                if isinstance(exc, DiskSpaceError) or getattr(exc, "errno", None) == 28:
+                    trial.set_user_attr("retry_after_disk", True)
+                import traceback
+                traceback.print_exc()
+                raise
+        enqueue_interrupted(study, inp)
         remaining=cfg['trials']-len(study.get_trials(states=(optuna.trial.TrialState.COMPLETE,)))
         def persist_sampler(study, trial):
             temp=sampler_path.with_suffix('.tmp')
@@ -183,11 +197,11 @@ def run_study(run, config_path, device, *, stage="all"):
             score_frames.append(pl.read_parquet(root/f'{candidate.id}_scores.parquet'))
             trials.append(dict(**vars(candidate),score=trial.value))
         write(run/'estado_curvas.json',dict(estado='HPO',input=inp,trials_completos=len(trials)))
-    scores=pl.concat(score_frames);scores.write_parquet(root/'scores.parquet')
+    scores=pl.concat(score_frames);write_parquet(scores,root/'scores.parquet')
     write(root/'candidatos.json',trials)
     for name, groups in [('finalists_budget.parquet',['budget','input']),('finalists_total.parquet',['input'])]:
         finalists=scores.group_by(*groups,'candidate').agg(pl.col('score').mean()).sort(*groups,'score','candidate').unique(groups,keep='first')
-        finalists.write_parquet(root/name)
+        write_parquet(finalists,root/name)
     if stage == "tune":
         combine_history(root)
         return root

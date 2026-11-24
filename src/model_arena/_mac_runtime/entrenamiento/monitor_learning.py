@@ -1,6 +1,8 @@
 """Post-epoch fixed-set loss measurement. No optimizer or checkpoint selection."""
 import numpy as np
 import torch
+from model_arena.disk import check_space
+from model_arena.loss_store import write_parquet
 from agentic_forecasting.curve_models import make_batch,CURVE_PROBS
 
 def build_monitor(training,full,end,spec,candidate,device,calendar,fold,cfg,detail_path=None):
@@ -17,8 +19,14 @@ def build_monitor(training,full,end,spec,candidate,device,calendar,fold,cfg,deta
         from pathlib import Path
         detail_path=Path(detail_path)
         detail_path.parent.mkdir(parents=True,exist_ok=True)
-        detail_path.unlink(missing_ok=True)
+        detail_path.mkdir(exist_ok=True)
+        detail_path.with_suffix(".parquet").unlink(missing_ok=True)
+        # This is called only when the fit has no completed checkpoint.
+        for old in detail_path.glob("epoch_*.parquet"):
+            old.unlink()
     def measure(model):
+        if detail_path is not None:
+            check_space(detail_path, stage=f"{candidate.id} {fold} época")
         epoch_counter[0]+=1
         details=[]
         previous=model.training;model.eval()
@@ -44,12 +52,8 @@ def build_monitor(training,full,end,spec,candidate,device,calendar,fold,cfg,deta
         try:
             train=loss(training,train_refs,'train');validation=loss(full,validation_refs,'validation')
             if detail_path is not None and details:
-                import csv
-                first=not detail_path.exists()
-                with detail_path.open('a',newline='') as stream:
-                    writer=csv.DictWriter(stream,fieldnames=list(details[0]))
-                    if first:writer.writeheader()
-                    writer.writerows(details)
+                import polars as pl
+                write_parquet(pl.DataFrame(details), detail_path/f"epoch_{epoch_counter[0]:04d}.parquet")
             return dict(fixed_train_saldo=train[0],fixed_train_variacion=train[1],fixed_validation_saldo=validation[0],fixed_validation_variacion=validation[1])
         finally:model.train(previous)
     measure.selection=dict(account_ids=[training[i].id for i in selected],train_origins=[o for i,o in train_refs],validation_origin=end if validation_refs else None,seed=spec.seed+901)
