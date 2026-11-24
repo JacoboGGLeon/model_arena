@@ -1,0 +1,20 @@
+{
+  "version": "0.1.0rc1",
+  "python": "3.12.14",
+  "tests": 37,
+  "failures": 0,
+  "errors": 0,
+  "skipped": 0,
+  "checks": {
+    "ruff": "passed",
+    "build_wheel_and_sdist": "passed",
+    "twine_metadata": "passed",
+    "wheel_content_no_deployment_inputs": "passed",
+    "notebook_syntax": "passed",
+    "generic_demo_execution": "passed",
+    "local_mac_cpu_pipeline": "passed",
+    "ada_live": "not_run",
+    "github_push": "repository_created_source_prepared_for_upload",
+    "pypi_upload": "pending_trusted_publisher"
+  }
+}
