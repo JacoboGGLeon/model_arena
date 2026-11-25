@@ -77,6 +77,8 @@ def execute(project, stage):
                     frame = worker.emit(
                         model, group, dates, end, spec, candidate, fold, torch.device(device), calendar
                     )
+                    if getattr(candidate,"target",None):
+                        frame=frame.filter(pl.col("target")==candidate.target)
                     pieces.append(
                         frame.with_columns(
                             pl.col("method").alias("candidate_model"),
@@ -130,7 +132,7 @@ def execute(project, stage):
                         muestra=dict(entrenadas=len(seen), atipicas_zero_shot=len(atypical)),
                         config=cfg,
                         training_history=str(history.relative_to(root)),
-                        protocol="F1-F3 selection evidence; fixed winner configuration per entity; no independent test",
+                        protocol="F1-F3 selection evidence; fixed winner configuration per entity and target; no independent test",
                     ),
                 )
                 from observatorio_athena.common import Config

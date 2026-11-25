@@ -2,7 +2,7 @@
 
 Explicit forecasting competition and observable learning histories.
 
-Version **0.1.4**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.4"`.
+Version **0.1.5**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.5"`.
 Source: https://github.com/JacoboGGLeon/model_arena · PyPI: https://pypi.org/project/model-arena-sdk/.
 
 The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. The storage profile was exercised end-to-end in ADA, including S3/Athena publication; automated tests use synthetic data.
@@ -30,7 +30,7 @@ publication = arena.publish(release, destination='publications')
 The default installation includes the complete forecasting and monitoring runtime. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
 
 ```bash
-python -m pip install "model-arena-sdk==0.1.4"
+python -m pip install "model-arena-sdk==0.1.5"
 ```
 
 In ADA, keep the existing Artifactory indexes and approved CUDA-compatible PyTorch installation. No package index or CUDA build is forced by the SDK. Default installation includes PyTorch and the dashboard dependencies; imports remain lazy and reading results does not initialize CUDA. Existing extras remain available for compatibility.
@@ -144,3 +144,11 @@ Each `ModelSpec` has a separate TPE study and budget; `tune(n_trials=...)` expli
 MAC deployment opts in through `curvas.families={"encoder_decoder":25,"tide":25,"nhits":25,"nlinear":25,"dlinear":25,"nbeats":25}`. X0-only families run only on X0; all other configured inputs are retained for the other families. This means up to **375 candidates / 1125 fold fits** for X0–X3, before pruning; final fits remain 75 epochs. Missing `families` preserves the old Encoder–Decoder-only behavior. Capabilities and budgets are explicit, not inferred from entropy budgets. Checkpoints record upstream version and architecture-source hashes; changed upstream code is rejected when restoring. Create a new MAC project for this protocol.
 
 NBEATS `shared_weights` controls reuse between blocks, not sharing between saldo and variación networks.
+
+## Independent MAC objectives (0.1.5)
+
+New MacProject runs use `curvas.objectives=["saldo","variacion"]` and `selection_scope="entity_target"`. Each input/family/objective has its own TPE study and pruning evidence. Each candidate trains one target only; the MAC encoder shared/independent dimension is removed. Finalists and winners are resolved separately per account and objective, including seen-only fallback for zero-shot accounts. The global model remains shared across accounts, never across objectives.
+
+With 25 trials per supported input/family/objective: **750 candidates /2250 F1–F3 fits**, before pruning. Final selected configurations use 75 epochs. Budgets may be lowered before project creation. This supersedes the joint MAC counts above for new projects; legacy snapshots remain unchanged. Inventory candidate/selection_source strings encode mappings by target; daily and Engine2 retain a scalar candidate per target row.
+
+For the generic API, create a ModelArena per objective with `PanelSchema(target_cols=[target])`; arbitrary multi-target configurations remain supported explicitly. No hidden joint-to-independent conversion occurs in the generic API.

@@ -181,21 +181,21 @@ def render_alerts(repo, data, paged, filters):
     event_args={**args,'fold':None,'account':account}
     events=data(repo.events(**event_args))
     st.subheader('Detalle de la cuenta · '+account)
-    routing=daily[['fold','candidate','input']].drop_duplicates()
+    routing=daily[['target','fold','candidate','input']].drop_duplicates()
     final=routing[routing.fold=='FUTURO']
     if final.empty:
         st.warning('No se publicó la asignación final de esta serie. No se mostrará una composición como ganador.')
         daily=daily.iloc[:0]
     else:
-        winner=final.iloc[0].candidate
-        missing=routing.loc[routing.candidate!=winner,'fold'].tolist()
-        st.success('Ganador de la serie: '+str(winner)+' · '+str(final.iloc[0]['input']))
+        winners=final.drop_duplicates('target').set_index('target')['candidate'].to_dict()
+        missing=routing.loc[routing.candidate!=routing.target.map(winners),'fold'].unique().tolist()
+        st.success(' · '.join(str(t)+': '+str(c) for t,c in winners.items()))
         daily=daily.copy()
-        daily.loc[daily.candidate!=winner,['model_q025','model_q50','model_q975']]=np.nan
+        daily.loc[daily.candidate!=daily.target.map(winners),['model_q025','model_q50','model_q975']]=np.nan
         if missing:st.info('Sin curva histórica publicada del ganador en '+', '.join(missing)+'. Se conserva Baseline y Observado; no se reconstruye el pasado con pesos finales.')
     with st.expander('Modelo asignado y procedencia'):
         if not final.empty:
-            st.dataframe(final[['candidate','input']].drop_duplicates().rename(columns={'candidate':'Winner de la serie','input':'Input'}),hide_index=True,use_container_width=True)
+            st.dataframe(final[['target','candidate','input']].drop_duplicates().rename(columns={'candidate':'Winner de la serie','input':'Input'}),hide_index=True,use_container_width=True)
             st.caption('Asignación final usada para esta serie. Los tramos históricos disponibles se indican arriba.')
         else:st.info('Sin ganador final publicado.')
     a,b=st.columns(2)

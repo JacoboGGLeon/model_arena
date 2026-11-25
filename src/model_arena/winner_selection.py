@@ -3,6 +3,18 @@ import polars as pl
 
 
 def assignments(scores, inventory, candidates, prior_folds):
+    if candidates and getattr(candidates[0], 'target', None):
+        parts=[]
+        for target in ('saldo','variacion'):
+            pool=[c for c in candidates if c.target==target]
+            if not pool:
+                raise ValueError('Missing candidates for '+target)
+            # Recursive legacy selector on exactly one objective, preserving fallback policy.
+            from types import SimpleNamespace
+            plain=[SimpleNamespace(**{k:v for k,v in vars(c).items() if k!='target'}) for c in pool]
+            part=assignments(scores.filter(pl.col('target')==target),inventory,plain,prior_folds)
+            parts.append(part.with_columns(pl.lit(target).alias('target')))
+        return pl.concat(parts)
     eligible = scores.filter(pl.col('fold').is_in(prior_folds))
     if eligible.is_empty():
         return inventory.with_columns(pl.lit(candidates[0].id).alias('candidate'),pl.lit('INITIAL_CONFIG').alias('selection_source'))

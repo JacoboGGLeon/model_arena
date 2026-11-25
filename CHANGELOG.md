@@ -1,3 +1,10 @@
+# 0.1.5
+
+- Independent MAC HPO, pruning and single-target global networks for saldo/variation.
+- Finalists and winner routing per entity/target, including zero-shot fallback.
+- Per-target alert provenance; unchanged Engine2/3 schemas and legacy frozen projects.
+- New ADA runs: 750 candidates /2250 fold fits at 25 trials per family/input/objective.
+
 # Changelog
 
 ## 0.1.4

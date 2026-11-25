@@ -62,7 +62,7 @@ def candidate_for(trial, inp, cfg):
             lr=params['lr'],weight_decay=params['weight_decay'])
     return SimpleNamespace(id=trial.user_attrs.get('resume_candidate_id', f'{inp}_T{trial.number:04d}'),inputs=inp,family='encoder_decoder',
         encoder_kind=trial.suggest_categorical('encoder_kind',cfg['encoder_kinds']) if 'encoder_kinds' in cfg else 'tft_compact',
-        encoder_design=trial.suggest_categorical('encoder',cfg['encoders']),
+        encoder_design='single' if cfg.get('target') else trial.suggest_categorical('encoder',cfg['encoders']),
         depth=trial.suggest_categorical('encoder_depth',cfg['depths']),
         decoder_depth=trial.suggest_categorical('decoder_depth',cfg['decoder_depths']),
         width=trial.suggest_categorical('width',cfg['widths']),
@@ -126,7 +126,7 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
         history.append(row)
         persist_history(root, candidate.id, fold, history)
         if trial is not None:
-            value = float(np.mean([row['fixed_validation_saldo'],row['fixed_validation_variacion']]))
+            value = float(row['fixed_validation_'+candidate.target]) if getattr(candidate,'target',None) else float(np.mean([row['fixed_validation_saldo'],row['fixed_validation_variacion']]))
             report_epoch(trial,value,epoch=row['epoch'],fold_index=fold_index,
                 epochs_per_fold=spec.epochs,fold=fold)
     print(f'Ajustando {candidate.id} · {fold} · {len(known)} cuentas', flush=True)
@@ -147,6 +147,10 @@ def emit(model, series, dates, end, spec, candidate, fold, device, calendar):
     observed = None if fold == 'FUTURO' else np.stack([s.values[end:end+spec.horizon] for s in series])
     history = np.stack([s.values[end-spec.window:end] for s in series])
     scales = np.maximum(np.maximum(np.median(np.abs(history),axis=1),np.quantile(history,.75,axis=1)-np.quantile(history,.25,axis=1)),1.)
+    if getattr(candidate,'target',None):
+        index = ('saldo','variacion').index(candidate.target)
+        scales = scales[:,index:index+1]
+        if observed is not None:observed = observed[...,index:index+1]
     return make_frame(forecast,baseline,observed,series,dates[end:end+spec.horizon],candidate,fold,dates[end-1],scales)
 
 
@@ -175,9 +179,12 @@ def run_study(run, config_path, device, *, stage="all"):
     families=cfg.get('families',{'encoder_decoder':cfg['trials']})
     tasks=[(inp,family,budget) for inp in cfg['inputs'] for family,budget in families.items()
            if family not in ('nlinear','dlinear','nbeats') or inp=='X0']
-    for inp,family,budget in tasks:
-        cfg={**config['curvas'],'family':family,'trials':budget}
+    targets = config['curvas'].get('objectives', [None])
+    tasks = [(inp,family,budget,target) for inp,family,budget in tasks for target in targets]
+    for inp,family,budget,target in tasks:
+        cfg={**config['curvas'],'family':family,'trials':budget,'target':target}
         study_key=inp if 'families' not in cfg else inp+'_'+family
+        if target:study_key += '_'+target
         sampler_path=root/f'{study_key}_sampler.pkl'
         sampler=pickle.loads(sampler_path.read_bytes()) if sampler_path.exists() else optuna.samplers.TPESampler(seed=spec.seed+cfg['inputs'].index(inp))
         pruner=make_pruner(cfg.get('pruner'),epochs_per_fold=spec.epochs)
@@ -189,6 +196,11 @@ def run_study(run, config_path, device, *, stage="all"):
             candidate=candidate_for(trial,inp,cfg)
             if 'families' in cfg and family=='encoder_decoder' and 'resume_candidate_id' not in trial.user_attrs:
                 candidate.id=f'{inp}_{family}_T{trial.number:04d}'
+            if target:
+                candidate.target=target
+                candidate.encoder_design='single'
+                if 'resume_candidate_id' not in trial.user_attrs:candidate.id=study_key+f'_T{trial.number:04d}'
+                trial.set_user_attr('target',target)
             trial.set_user_attr('family',family)
             trial.set_user_attr('reference_group',candidate.encoder_kind)
             trial.set_user_attr('candidate_id',candidate.id)
@@ -244,7 +256,7 @@ def run_study(run, config_path, device, *, stage="all"):
     if 'family' in scores.columns:scores=scores.with_columns(pl.col('family').fill_null('encoder_decoder'))
     write_parquet(scores,root/'scores.parquet')
     write(root/'candidatos.json',trials)
-    family_dims=['family'] if 'family' in scores.columns else []
+    family_dims=(['target'] if config['curvas'].get('objectives') else [])+(['family'] if 'family' in scores.columns else [])
     for name, groups in [('finalists_budget.parquet',['budget',*family_dims,'input']),('finalists_total.parquet',[*family_dims,'input'])]:
         finalists=scores.group_by(*groups,'candidate').agg(pl.col('score').mean()).sort(*groups,'score','candidate').unique(groups,keep='first')
         write_parquet(finalists,root/name)

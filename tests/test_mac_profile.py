@@ -129,9 +129,9 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
     audit_path = project.path / "run/curvas/hpo_trials.parquet"
     audit = pl.read_parquet(audit_path)
     if calendar_kind == "csv":
-        assert audit.filter(pl.col("state") == "COMPLETE").height == 12
+        assert audit.filter(pl.col("state") == "COMPLETE").height == 24
         pruned = audit.filter(pl.col("state") == "PRUNED")
-        assert pruned.height == 12 and set(pruned["pruned_epoch"]) == {5}
+        assert pruned.height == 24 and set(pruned["pruned_epoch"]) == {5}
         for candidate in pruned["candidate"]:
             history = pl.read_parquet(project.path / f"run/curvas/loss/{candidate}_F1.parquet")
             assert history["epoch"].to_list() == [1, 2, 3, 4, 5]
@@ -141,6 +141,19 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
     project.select().fit()
     weights = list((project.path / "run/curvas/modelos").glob("*_FUTURO.pt"))
     assert weights
+    for checkpoint in weights:
+        saved=torch.load(checkpoint,weights_only=False)
+        target=saved['candidate']['target']
+        other='variacion' if target=='saldo' else 'saldo'
+        assert saved['candidate']['encoder_design']=='single'
+        assert saved['training_history'][0]['train_loss_'+other] is None
+        assert saved['training_history'][0]['fixed_train_'+other] is None
+        if saved['candidate']['family']!='encoder_decoder':
+            assert not any(key.startswith('external.networks.1.') for key in saved['state_dict'])
+    chosen = pl.read_parquet(project.path / "run/curvas/winners_FUTURO.parquet")
+    assert chosen.height == 6
+    assert set(chosen["target"]) == {"saldo", "variacion"}
+    assert chosen.unique(["account_id", "target"]).height == 6
     before = {str(p): digest(p) for p in weights}
     predictions = project.predict()
     frame = pl.read_parquet(predictions)

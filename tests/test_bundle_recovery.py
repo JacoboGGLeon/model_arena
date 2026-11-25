@@ -128,12 +128,19 @@ def test_upgrade_old_run_and_continue_without_refitting_completed_folds(tmp_path
         calendar_path=tmp_path / "calendar.csv",
         device="cpu",
     )
+    # Represent an actual pre-0.1.5 joint project before replacing its runtime.
+    legacy = json.loads((project.path / "training.json").read_text())
+    legacy['curvas'].pop('objectives')
+    legacy['curvas'].pop('selection_scope')
+    legacy['curvas']['encoders'] = ['shared']
+    (project.path / "training.json").write_text(json.dumps(legacy))
     shutil.rmtree(project.path / "runtime")
     shutil.copytree(BUNDLE / "tests/fixtures/runtime_01", project.path / "runtime")
     calendar = project.path / "runtime/entrenamiento/data/calendar_authoritative.csv"
     calendar.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(tmp_path / "calendar.csv", calendar)
     settings = json.loads((project.path / "project.json").read_text())
+    settings["training_sha"] = digest(project.path / "training.json")
     settings["code_sha"] = digest(project.path / "runtime/BUILD_MONITOR.json")
     (project.path / "project.json").write_text(json.dumps(settings))
     project = MacProject(project.path)

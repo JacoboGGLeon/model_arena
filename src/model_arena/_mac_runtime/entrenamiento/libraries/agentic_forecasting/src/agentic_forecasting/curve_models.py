@@ -22,9 +22,11 @@ def persistence(history, horizon):
 class CurveTFT(nn.Module):
     def __init__(self, spec, candidate, dropout):
         super().__init__()
+        self.target_names = (candidate.target,) if getattr(candidate, "target", None) else TARGETS
+        targets = len(self.target_names)
         if getattr(candidate, 'family', 'encoder_decoder') != 'encoder_decoder':
             from agentic_forecasting.complete_network import CompleteNetwork, CompleteParameters
-            self.external = CompleteNetwork(family=candidate.family,targets=2,window=spec.window,
+            self.external = CompleteNetwork(family=candidate.family,targets=targets,window=spec.window,
                 h=spec.horizon,historical=spec.calendar_features if candidate.inputs in ('X1','X3') else 0,
                 future=spec.calendar_features if candidate.inputs in ('X2','X3') else 0,
                 parameters=CompleteParameters.model_validate(candidate.family_params))
@@ -38,20 +40,20 @@ class CurveTFT(nn.Module):
         self.future_calendar = nn.Linear(calendar_size, width) if candidate.inputs in ("X2", "X3") else None
         self.encoder_kind = getattr(candidate, "encoder_kind", "tft_compact")
         self.encoders = nn.ModuleList()
-        for _ in range(1 if candidate.encoder_design == "shared" else len(TARGETS)):
+        for _ in range(1 if candidate.encoder_design == "shared" else targets):
             if self.encoder_kind != "tft_compact":
                 self.encoders.append(ContextEncoder(kind=self.encoder_kind, window=spec.window,
-                    width=width, depth=candidate.depth, dropout=dropout, activation=activations[activation], targets=len(TARGETS)))
+                    width=width, depth=candidate.depth, dropout=dropout, activation=activations[activation], targets=targets))
                 continue
             encoder = TFTTemporalBackbone(width, dropout)
-            encoder.input = nn.Linear(len(TARGETS), width)
+            encoder.input = nn.Linear(targets, width)
             encoder.encoder = nn.LSTM(width, width, candidate.depth, batch_first=True)
             for block in (encoder.history_grn, encoder.state_grn, encoder.query_grn, encoder.output_grn):
                 block.activation = activations[activation]()
             self.encoders.append(encoder)
         self.positions = nn.ModuleList(nn.Embedding(spec.horizon, width) for _ in self.encoders)
         heads = []
-        for _ in TARGETS:
+        for _ in self.target_names:
             layers = []
             for _ in range(getattr(candidate, "decoder_depth", 1)):
                 layers.extend([nn.Linear(width, width), activations[activation](), nn.Dropout(dropout)])
@@ -84,7 +86,7 @@ class CurveTFT(nn.Module):
             value, control = enc.attention_gate(attended).chunk(2, dim=-1)
             representations.append(enc.output_grn(enc.attention_norm(queries + value * control.sigmoid())))
         outputs = []
-        for i, rep in enumerate((representations[0], representations[-1])):
+        for i, rep in enumerate([representations[min(i, len(representations)-1)] for i in range(len(self.target_names))]):
             mid, lower, upper = self.quantiles[i](rep).split(1, dim=-1)
             outputs.append(torch.cat((mid-F.softplus(lower), mid,
                                       mid+F.softplus(upper)), dim=-1))
@@ -105,6 +107,12 @@ def make_batch(series, refs, spec, candidate, device, calendar, observed):
     if observed:
         future = np.stack([series[i].values[end:end+spec.horizon] for i, end in refs])
         truth = torch.as_tensor(future, dtype=torch.float32, device=device) / scale.squeeze(-1)
+    if getattr(candidate, 'target', None):
+        index = TARGETS.index(candidate.target)
+        features['history_y'] = features['history_y'][..., index:index+1]
+        features['scales'] = features['scales'][..., index:index+1]
+        if truth is not None:truth = truth[..., index:index+1]
+        if anchor_native is not None:anchor_native = anchor_native[..., index:index+1, :]
     return features, anchor_native, truth
 
 
@@ -124,7 +132,7 @@ def fit_curves(series, end, spec, candidate, device, calendar, config, on_epoch=
         schedule = np.column_stack((accounts, rng.integers(first_origin, last_origin+1, size=samples)))
         rng.shuffle(schedule)
         loss_total = 0.
-        loss_by_target = np.zeros(2)
+        loss_by_target = np.zeros(len(model.target_names))
         for first in range(0, samples, spec.batch_size):
             features, _, truth = make_batch(
                 series, schedule[first:first+spec.batch_size], spec, candidate, device, calendar, True
@@ -144,7 +152,7 @@ def fit_curves(series, end, spec, candidate, device, calendar, config, on_epoch=
             loss_total += loss.detach().item() * len(truth)
         epoch_loss = loss_total/samples
         if on_epoch is not None:
-            record=dict(epoch=epoch+1, train_loss=epoch_loss, validation_loss=None, train_loss_saldo=float(loss_by_target[0]/samples), train_loss_variacion=float(loss_by_target[1]/samples))
+            record=dict(epoch=epoch+1, train_loss=epoch_loss, validation_loss=None, **{f"train_loss_{target}": float(loss_by_target[i]/samples) if target in model.target_names else None for target in TARGETS for i in [model.target_names.index(target) if target in model.target_names else 0]})
             if monitor is not None:record.update(monitor(model))
             on_epoch(record)
         print(f'Época {epoch+1}/{spec.epochs} · pérdida {epoch_loss:.6g}', flush=True)

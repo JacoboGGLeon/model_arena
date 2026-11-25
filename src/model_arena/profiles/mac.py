@@ -39,6 +39,12 @@ class MacProject:
             raise ValueError("The profile requires the complete eligible universe, account limits = 0")
         if training["model"]["calendar_features"] != 243:
             raise ValueError("The MAC compatibility runtime requires exactly 243 calendar features")
+        objectives = training['curvas'].get('objectives', ['saldo','variacion'])
+        if objectives != ['saldo','variacion']:
+            raise ValueError('Declare objectives=[saldo, variacion] for independent MAC studies')
+        training['curvas']['objectives'] = objectives
+        training['curvas'].pop('encoders', None)
+        training['curvas']['selection_scope'] = 'entity_target'
         training["curvas"]["final_epochs"] = 75
         training["curvas"]["loss_monitor_accounts"] = None
         from ..contracts import PruningSpec

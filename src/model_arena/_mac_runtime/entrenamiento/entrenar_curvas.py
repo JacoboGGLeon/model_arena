@@ -40,7 +40,7 @@ def spec_for(config):
     return ExperimentSpec(
         **config['model'],
         inputs=tuple(config['curvas']['inputs']),
-        encoder_designs=tuple(config['curvas']['encoders']),
+        encoder_designs=tuple(config['curvas'].get('encoders',['independent'])),
         architectures=('tft_compact',), decoders=('direct',),
         approaches=('mixed',), cv_folds=3, test=config['model']['horizon'],
     )
@@ -85,17 +85,18 @@ def prepare(run, config, spec):
 
 def make_frame(model, reference, observed, series, dates, candidate, fold, origin, scales):
     n,h = len(series),len(dates)
-    tile = 2*len(COMPONENTS)
+    targets = (candidate.target,) if getattr(candidate, 'target', None) else TARGETS
+    tile = len(targets)*len(COMPONENTS)
     obs = np.repeat(observed[..., None], len(COMPONENTS), axis=-1).ravel().tolist() if observed is not None else None
     data = pl.DataFrame({
         'account_id':np.repeat([s.id for s in series],h*tile).tolist(),
         'currency':np.repeat([s.currency for s in series],h*tile).tolist(),
         'date':np.tile(np.repeat(dates,tile),n).tolist(),
         'h':np.tile(np.repeat(np.arange(1,h+1),tile),n),
-        'target':np.tile(np.repeat(TARGETS,len(COMPONENTS)),n*h).tolist(),
-        'component':np.tile(COMPONENTS,n*h*len(TARGETS)).tolist(),
+        'target':np.tile(np.repeat(targets,len(COMPONENTS)),n*h).tolist(),
+        'component':np.tile(COMPONENTS,n*h*len(targets)).tolist(),
         'observed':obs if obs is not None else [None]*(n*h*tile),
-        'scale':np.broadcast_to(scales[:,None,:,None],(n,h,2,len(COMPONENTS))).ravel(),
+        'scale':np.broadcast_to(scales[:,None,:,None],(n,h,len(targets),len(COMPONENTS))).ravel(),
     },schema_overrides={'observed':pl.Float64})
     return pl.concat([
         data.with_columns(pl.lit(candidate.id).alias('method'),pl.Series('forecast',model.ravel())),

@@ -6,6 +6,7 @@ from model_arena.loss_store import write_parquet
 from agentic_forecasting.curve_models import make_batch,CURVE_PROBS
 
 def build_monitor(training,full,end,spec,candidate,device,calendar,fold,cfg,detail_path=None):
+    targets = [candidate.target] if getattr(candidate, 'target', None) else ['saldo','variacion']
     requested=cfg.get('loss_monitor_accounts',128)
     limit=len(training) if requested is None else int(requested)
     if limit<1:raise ValueError('loss_monitor_accounts debe ser positivo')
@@ -31,7 +32,7 @@ def build_monitor(training,full,end,spec,candidate,device,calendar,fold,cfg,deta
         details=[]
         previous=model.training;model.eval()
         def loss(series,refs,split):
-            total=np.zeros(2,dtype=np.float64);count=0
+            total=np.zeros(len(targets),dtype=np.float64);count=0
             with torch.inference_mode():
                 for start in range(0,len(refs),spec.batch_size):
                     features,_,truth=make_batch(series,refs[start:start+spec.batch_size],spec,candidate,device,calendar,True)
@@ -42,19 +43,19 @@ def build_monitor(training,full,end,spec,candidate,device,calendar,fold,cfg,deta
                     individual=elements.mean(dim=(1,3)).cpu().numpy()
                     for (index,origin),values in zip(refs[start:start+spec.batch_size],individual):
                         item=series[index]
-                        for target,value in zip(['saldo','variacion'],values):
+                        for target,value in zip(targets,values):
                             details.append(dict(account_id=item.id,currency=item.currency,budget=item.budget,
                                 cohort=item.cohort,taxonomy='cuentas_entrenamiento',candidate=candidate.id,
                                 fold=fold,target=target,split=split,epoch=epoch_counter[0],loss=float(value),
                                 n_observations=spec.horizon*len(CURVE_PROBS)))
                     count+=len(truth)*spec.horizon*len(CURVE_PROBS)
-            return total/count if count else [None,None]
+            return dict(zip(targets,total/count if count else [None]*len(targets)))
         try:
             train=loss(training,train_refs,'train');validation=loss(full,validation_refs,'validation')
             if detail_path is not None and details:
                 import polars as pl
                 write_parquet(pl.DataFrame(details), detail_path/f"epoch_{epoch_counter[0]:04d}.parquet")
-            return dict(fixed_train_saldo=train[0],fixed_train_variacion=train[1],fixed_validation_saldo=validation[0],fixed_validation_variacion=validation[1])
+            return {**{f'fixed_train_{t}':train.get(t) for t in ['saldo','variacion']}, **{f'fixed_validation_{t}':validation.get(t) for t in ['saldo','variacion']}}
         finally:model.train(previous)
     measure.selection=dict(account_ids=[training[i].id for i in selected],train_origins=[o for i,o in train_refs],validation_origin=end if validation_refs else None,seed=spec.seed+901)
     return measure

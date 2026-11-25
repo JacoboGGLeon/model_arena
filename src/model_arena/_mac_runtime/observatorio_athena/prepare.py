@@ -77,7 +77,7 @@ def source_groups(source,scratch):
  if pending is not None and pending.height:yield pending.sort('date')
 
 
-def read_prediction(path,inventory):
+def read_prediction(path,inventory,targets=('saldo','variacion')):
  frame=pl.read_parquet(path)
  methods=[x for x in frame['method'].unique().to_list() if x!='Persistencia']
  if len(methods)!=1:raise ValueError(f'{path}: se esperaba un modelo más Persistencia')
@@ -100,7 +100,7 @@ def read_prediction(path,inventory):
  numbers=['scale','model_q025','model_q50','model_q975','baseline_q025','baseline_q50','baseline_q975']
  if paired.filter(~pl.all_horizontal(pl.col(c).is_not_null() & pl.col(c).is_finite() for c in numbers)).height:raise ValueError('Predicción no finita')
  if paired.filter((pl.col('scale')<=0)|(pl.col('model_q025')>pl.col('model_q50'))|(pl.col('model_q50')>pl.col('model_q975'))|(pl.col('baseline_q025')>pl.col('baseline_q50'))|(pl.col('baseline_q50')>pl.col('baseline_q975'))).height:raise ValueError('Escala o cuantiles inválidos')
- if set(paired['target'])!={'saldo','variacion'} or paired.group_by('account_id','date','fold').agg(pl.col('target').n_unique().alias('n')).filter(pl.col('n')!=2).height:raise ValueError('Saldo y variación deben compartir las mismas cuentas y fechas')
+ if set(paired['target'])!=set(targets) or paired.group_by('account_id','date','fold').agg(pl.col('target').n_unique().alias('n')).filter(pl.col('n')!=len(targets)).height:raise ValueError('Saldo y variación deben compartir las mismas cuentas y fechas')
  return paired.join(inventory.select('account_id','budget','cohort','taxonomy','sign'),on='account_id',validate='m:1')
 
 
@@ -167,7 +167,18 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
   writer.write('calendar_provenance',[dict(generator=cp['generator'],generator_version=cp.get('generator_version'),profile=cp['profile'],view=cp.get('view'),start_date=cp['start'],end_date=cp['end'],calendar_sha256=cp['calendar_sha256'],feature_count=cp['feature_count'],rows=cp['rows'],metadata_json=json.dumps(cp,ensure_ascii=False,sort_keys=True))])
  stored=pl.read_parquet(root/'inventory.parquet')
  frozen={r['account_id']:r for r in stored.to_dicts()}
- assignments={r['account_id']:r for r in pl.read_parquet(root/'winners_FUTURO.parquet').to_dicts()}
+ routes=pl.read_parquet(root/'winners_FUTURO.parquet').to_dicts()
+ assignments={}
+ for route in routes:
+  aid=route['account_id']
+  if route.get('target'):
+   item=assignments.setdefault(aid,dict(candidate={},selection_source={}))
+   item['candidate'][route['target']]=route['candidate']
+   item['selection_source'][route['target']]=route['selection_source']
+  else:assignments[aid]=route
+ for route in assignments.values():
+  for key in ['candidate','selection_source']:
+   if isinstance(route.get(key),dict):route[key]=json.dumps(route[key],sort_keys=True)
  load_date=day(config.delivery_load_date) if config.delivery_load_date else None
  if load_date is None and 'load_date' in pl.scan_parquet(source).collect_schema():
   last_load=pl.scan_parquet(source).select(pl.col('load_date').max()).collect().item()
@@ -208,12 +219,13 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
   candidate_paths=sorted((root/'predicciones').glob(d['id']+'_F[123].parquet'))
   if len(candidate_paths)!=3:raise ValueError('Faltan folds completos de '+d['id'])
   for path in candidate_paths:
-   paired=read_prediction(path,inventory)
+   paired=read_prediction(path,inventory,targets=(d['target'],) if d.get('target') else ('saldo','variacion'))
    fold=paired['fold'][0]
    population=paired.select('account_id','currency','date','target','observed').sort('account_id','date','target').write_csv()
    digest=hashlib.sha256(population.encode()).hexdigest()
-   if fold in population_hashes and population_hashes[fold]!=digest:raise ValueError('Candidatos con distinta población u observados en '+fold)
-   population_hashes[fold]=digest
+   population_key=fold+':'+str(d.get('target','joint'))
+   if population_key in population_hashes and population_hashes[population_key]!=digest:raise ValueError('Candidatos con distinta población u observados en '+fold)
+   population_hashes[population_key]=digest
    rows=metric_rows(paired,d['id'],'Modeling');writer.write('metrics',rows)
    for r in rows:
     if r['role']!='Modeling':continue
@@ -263,7 +275,7 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
   for target in ('saldo','variacion'):
    col='train_loss_'+target
    if col in train.columns:
-    writer.write('training_targets',train.select('candidate','fold','epoch',pl.lit(target).alias('target'),pl.col(col).alias('train_loss')))
+    writer.write('training_targets',train.filter(pl.col(col).is_not_null()).select('candidate','fold','epoch',pl.lit(target).alias('target'),pl.col(col).alias('train_loss')))
  if training_path:
   for split in ['train','validation']:
    for target in ['saldo','variacion']:
