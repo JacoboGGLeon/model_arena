@@ -81,3 +81,10 @@ def test_generic_hpo_all_encoders_and_zero_shot(panel, spec):
                          for entity in static.entity for day in dates])
     predictions=arena.predict(futr_df=future)
     assert 'new' in set(predictions.entity)
+
+
+def test_frozen_mac_backend_matches_public_encoder_contract():
+    import model_arena
+    root=Path(model_arena.__file__).parent
+    backend=root/'_mac_runtime/entrenamiento/libraries/agentic_forecasting/src/agentic_forecasting/encoder_backends.py'
+    assert backend.read_bytes()==(root/'encoders.py').read_bytes()

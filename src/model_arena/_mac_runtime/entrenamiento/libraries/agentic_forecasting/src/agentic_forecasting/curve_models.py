@@ -5,7 +5,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
-from model_arena.encoders import ContextEncoder
+from agentic_forecasting.encoder_backends import ContextEncoder
 from agentic_forecasting.data import batch
 from agentic_forecasting.backbones import TFTTemporalBackbone
 

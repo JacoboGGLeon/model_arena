@@ -42,7 +42,7 @@
     "entrenamiento/libraries/agentic_forecasting/src/agentic_forecasting/engine.py": "3d161d7ef118c0cf966ac196397acfeae9cd05f62181a1033dee8b5f1962df98",
     "entrenamiento/libraries/agentic_forecasting/src/agentic_forecasting/percentage_metrics.py": "0b813483114b6f02d991e5d45ba25bf1ee371fd014a16d3c685d28c946015906",
     "entrenamiento/libraries/agentic_forecasting/src/agentic_forecasting/models.py": "62ca4f4032add98f7f30c3a9f9cc9ed4cd3a624a1dabc273b4440b5bc8b3e1f3",
-    "entrenamiento/libraries/agentic_forecasting/src/agentic_forecasting/curve_models.py": "f2cdab691befe2a2f904ee09a3848d71a61e01a55e06509aa3176bf7bfbd3618",
+    "entrenamiento/libraries/agentic_forecasting/src/agentic_forecasting/curve_models.py": "a4a20117d61f8c8847913cf76642e07deee236e91e06c8d7328cb6dc41ea518a",
     "entrenamiento/libraries/agentic_forecasting/src/agentic_forecasting/surfaces.py": "654d53e8d08c2c3da3532eeb32e4de171767a3a669d6eef38068882bb249704f",
     "entrenamiento/libraries/agentic_forecasting/src/agentic_forecasting/api.py": "6c45ae36262c4799982cf20d32ee56328df52a0a4ba4dd9399a9a3df45d0e3a8",
     "entrenamiento/libraries/accountability_observatory/src/observatorio_cuentas/__init__.py": "f1a4318e60395f8a1b38f4036afbd5d26087b25457dccd27185d3b62aaa758e2",
@@ -52,7 +52,8 @@
     "entrenamiento/libraries/accountability_observatory/src/observatorio_cuentas/sampling.py": "3288f4019930f0c246bdb008b0194ecd435c928851cf35bb978748cb79009a45",
     "entrenamiento/libraries/accountability_observatory/src/observatorio_cuentas/source_audit.py": "e2df8e12efb3bfc01272dad03fd0a3504df4fe54027eff7f815373f390893e00",
     "entrenamiento/libraries/accountability_observatory/src/accountability_observatory/__init__.py": "63dca83148d5f8c3fd7ef5b62112d3f20db55b8490df0af262169c9fe13298e9",
-    "entrenamiento/libraries/accountability_observatory/src/accountability_observatory/application.py": "e71795bfa30ffb1737c70d4cbe0e16b107fad06ad653ac3ec52719eeda6ccb5d"
+    "entrenamiento/libraries/accountability_observatory/src/accountability_observatory/application.py": "e71795bfa30ffb1737c70d4cbe0e16b107fad06ad653ac3ec52719eeda6ccb5d",
+    "entrenamiento/libraries/agentic_forecasting/src/agentic_forecasting/encoder_backends.py": "067ad32e18125717c05079bd5f0e01cd794709ea8ca1bd6829a362b2243fecb0"
   },
   "delivery": "SDK-0.1.3-Encoders"
 }
