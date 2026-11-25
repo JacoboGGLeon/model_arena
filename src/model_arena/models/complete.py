@@ -13,7 +13,7 @@ from pydantic import Field
 from ..contracts import Contract
 from .tft import TFTCompact
 
-FAMILIES = ('tide', 'nhits', 'nlinear', 'dlinear')
+FAMILIES = ('tide', 'nhits', 'nlinear', 'dlinear', 'nbeats')
 UPSTREAM = '3.1.2'
 
 
@@ -26,7 +26,7 @@ class CompleteParameters(Contract):
 def capabilities(kind, historical, future):
     if kind not in FAMILIES:
         raise ValueError('Unknown complete forecasting family: '+kind)
-    if kind in ('nlinear', 'dlinear') and (historical or future):
+    if kind in ('nlinear', 'dlinear', 'nbeats') and (historical or future):
         raise ValueError(kind+' supports X0 only; calendar inputs are not silently discarded')
 
 
@@ -48,6 +48,12 @@ def suggest_parameters(kind, trial, space):
             dropout_prob_theta=space.dropout)
         k=architecture.pop('n_pool_kernel_size')
         architecture['n_pool_kernel_size']=[k,k,1]
+    elif kind == 'nbeats':
+        width=trial.suggest_categorical('hidden_size',space.width)
+        blocks=trial.suggest_categorical('blocks_per_stack',[1,2])
+        architecture=dict(n_blocks=[blocks]*3,mlp_units=[[width,width]]*3,
+            shared_weights=trial.suggest_categorical('shared_weights',[False,True]),
+            activation=trial.suggest_categorical('activation',['ReLU','Tanh']))
     elif kind == 'dlinear':
         architecture=dict(moving_avg_window=trial.suggest_categorical('moving_avg_window',[3,5,9,25]))
     elif kind != 'nlinear':
@@ -62,22 +68,25 @@ class CompleteNetwork(nn.Module):
         capabilities(family,historical,future)
         if version('neuralforecast') != UPSTREAM:
             raise RuntimeError('This adapter requires neuralforecast=='+UPSTREAM)
-        from neuralforecast.models import TiDE, NHITS, NLinear, DLinear
+        from neuralforecast.models import TiDE, NHITS, NLinear, DLinear, NBEATS
         from neuralforecast.losses.pytorch import MQLoss
-        cls=dict(tide=TiDE,nhits=NHITS,nlinear=NLinear,dlinear=DLinear)[family]
+        cls=dict(tide=TiDE,nhits=NHITS,nlinear=NLinear,dlinear=DLinear,nbeats=NBEATS)[family]
         allowed=dict(tide={'hidden_size','num_encoder_layers','num_decoder_layers','decoder_output_dim',
                           'temporal_decoder_dim','dropout','temporal_width','layernorm'},
                      nhits={'n_blocks','mlp_units','n_pool_kernel_size','n_freq_downsample',
                             'pooling_mode','interpolation_mode','activation','dropout_prob_theta'},
-                     nlinear=set(),dlinear={'moving_avg_window'})[family]
+                     nlinear=set(),dlinear={'moving_avg_window'},
+                     nbeats={'n_harmonics','n_basis','basis','stack_types','n_blocks','mlp_units',
+                             'dropout_prob_theta','activation','shared_weights'})[family]
         if set(parameters.architecture)-allowed:
             raise ValueError('Unsupported '+family+' architecture parameters')
         self.window,self.h,self.historical,self.future=window,h,historical,future
+        exogenous=dict(hist_exog_list=[f'h{i}' for i in range(historical)] or None,
+                       futr_exog_list=[f'f{i}' for i in range(future)] or None) if family in ('tide','nhits') else {}
         numpy_state,python_state=np.random.get_state(),random.getstate()
         try:
             self.models=nn.ModuleList(cls(h=h,input_size=window,
-                hist_exog_list=[f'h{i}' for i in range(historical)] or None,
-                futr_exog_list=[f'f{i}' for i in range(future)] or None,
+                **exogenous,
                 loss=MQLoss(quantiles=[.025,.5,.975]),scaler_type='identity',
                 random_seed=(torch.initial_seed()+i) % (2**32),
                 **parameters.architecture) for i in range(targets))

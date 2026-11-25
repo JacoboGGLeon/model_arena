@@ -174,7 +174,7 @@ def run_study(run, config_path, device, *, stage="all"):
     (root/'predicciones').mkdir(exist_ok=True)
     families=cfg.get('families',{'encoder_decoder':cfg['trials']})
     tasks=[(inp,family,budget) for inp in cfg['inputs'] for family,budget in families.items()
-           if family not in ('nlinear','dlinear') or inp=='X0']
+           if family not in ('nlinear','dlinear','nbeats') or inp=='X0']
     for inp,family,budget in tasks:
         cfg={**config['curvas'],'family':family,'trials':budget}
         study_key=inp if 'families' not in cfg else inp+'_'+family

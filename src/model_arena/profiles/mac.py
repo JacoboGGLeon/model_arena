@@ -45,7 +45,7 @@ class MacProject:
 
         PruningSpec.model_validate(training["curvas"].get("pruner") or {})
         families=training['curvas'].get('families',{})
-        if ('families' in training['curvas'] and not families) or set(families)-{'encoder_decoder','tide','nhits','nlinear','dlinear'} or any(not isinstance(n,int) or n<1 for n in families.values()):
+        if ('families' in training['curvas'] and not families) or set(families)-{'encoder_decoder','tide','nhits','nlinear','dlinear','nbeats'} or any(not isinstance(n,int) or n<1 for n in families.values()):
             raise ValueError('Invalid family names or per-family trial budgets')
         kinds = training["curvas"].get("encoder_kinds", ["tft_compact"])
         from ..contracts import SearchSpec

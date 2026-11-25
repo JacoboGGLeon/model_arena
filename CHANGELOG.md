@@ -2,7 +2,7 @@
 
 ## 0.1.4
 
-- Register complete TiDE/NHITS/NLinear/DLinear architectures through pinned NeuralForecast forward adapters.
+- Register complete TiDE/NHITS/NLinear/DLinear/NBEATS/NBEATS architectures through pinned NeuralForecast forward adapters.
 - Add family-specific HPO, per-model budgets, covariate capability guards, joint target selection and upstream provenance checks.
 - Integrate complete families into the MAC lifecycle while retaining its output layouts and legacy opt-in behavior.
 

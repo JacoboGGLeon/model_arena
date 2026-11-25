@@ -124,9 +124,9 @@ Existing projects keep frozen code/configuration and default to TFT when encoder
 
 ## Complete forecasting families (0.1.4)
 
-`ModelSpec(kind="tide" | "nhits" | "nlinear" | "dlinear", alias=..., trials=25)` declares a complete model family, not a TFT encoder. Each target has an independent upstream network inside the candidate; selection combines target scores using the existing policy. The registered families use NeuralForecast **3.1.2**, with Lightning 2.5.x for compatibility with tested PyTorch 2.6. Architecture forwards are trained by Model Arena's AdamW/window/epoch loop, not a Lightning Trainer. Quantile outputs are monotonically rearranged. History uses linear window normalization for these families; Encoder–Decoder keeps its original transform.
+`ModelSpec(kind="tide" | "nhits" | "nlinear" | "dlinear" | "nbeats", alias=..., trials=25)` declares a complete model family, not a TFT encoder. Each target has an independent upstream network inside the candidate; selection combines target scores using the existing policy. The registered families use NeuralForecast **3.1.2**, with Lightning 2.5.x for compatibility with tested PyTorch 2.6. Architecture forwards are trained by Model Arena's AdamW/window/epoch loop, not a Lightning Trainer. Quantile outputs are monotonically rearranged. History uses linear window normalization for these families; Encoder–Decoder keeps its original transform.
 
-NLinear/DLinear support **X0 only**. Supplying covariates raises an error. TiDE/NHITS support past and future covariates. The historical portion of the future-covariate channel is explicitly zero-masked; past calendar enters the separate historical channel. No observed future targets enter inference. Complete families have their own typed parameter container (`lr`, `weight_decay`, `architecture`); encoder-layer/shared flags are not applied to them.
+NLinear/DLinear/NBEATS support **X0 only**. Supplying covariates raises an error. TiDE/NHITS support past and future covariates. The historical portion of the future-covariate channel is explicitly zero-masked; past calendar enters the separate historical channel. No observed future targets enter inference. Complete families have their own typed parameter container (`lr`, `weight_decay`, `architecture`); encoder-layer/shared flags are not applied to them.
 
 ```python
 models = [
@@ -135,9 +135,12 @@ models = [
     ModelSpec(alias="NHITS_X0", kind="nhits", trials=25),
     ModelSpec(alias="NLinear_X0", kind="nlinear", trials=25),
     ModelSpec(alias="DLinear_X0", kind="dlinear", trials=25),
+    ModelSpec(alias="NBEATS_X0", kind="nbeats", trials=25),
 ]
 ```
 
-Each `ModelSpec` has a separate TPE study and budget; `tune(n_trials=...)` explicitly overrides those budgets. Spaces tune TiDE dense/temporal widths and depths; NHITS block counts, pooling, MLP widths/activation; DLinear moving-average length; all families tune AdamW LR/weight decay. NLinear has no invented depth/activation dimensions.
+Each `ModelSpec` has a separate TPE study and budget; `tune(n_trials=...)` explicitly overrides those budgets. Spaces tune TiDE dense/temporal widths and depths; NHITS block counts, pooling, MLP widths/activation; DLinear moving-average length; NBEATS block counts, dense widths, activation and shared weights; all families tune AdamW LR/weight decay. NLinear has no invented depth/activation dimensions.
 
-MAC deployment opts in through `curvas.families={"encoder_decoder":25,"tide":25,"nhits":25,"nlinear":25,"dlinear":25}`. Linear families run only on X0; all other configured inputs are retained for the other families. This means up to **350 candidates / 1050 fold fits** for X0–X3, before pruning; final fits remain 75 epochs. Missing `families` preserves the old Encoder–Decoder-only behavior. Capabilities and budgets are explicit, not inferred from entropy budgets. Checkpoints record upstream version and architecture-source hashes; changed upstream code is rejected when restoring. Create a new MAC project for this protocol.
+MAC deployment opts in through `curvas.families={"encoder_decoder":25,"tide":25,"nhits":25,"nlinear":25,"dlinear":25,"nbeats":25}`. X0-only families run only on X0; all other configured inputs are retained for the other families. This means up to **375 candidates / 1125 fold fits** for X0–X3, before pruning; final fits remain 75 epochs. Missing `families` preserves the old Encoder–Decoder-only behavior. Capabilities and budgets are explicit, not inferred from entropy budgets. Checkpoints record upstream version and architecture-source hashes; changed upstream code is rejected when restoring. Create a new MAC project for this protocol.
+
+NBEATS `shared_weights` controls reuse between blocks, not sharing between saldo and variación networks.

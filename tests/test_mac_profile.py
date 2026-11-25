@@ -110,7 +110,7 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
                              encoders=["independent"],
                              pruner=dict(kind="patience", patience=4, min_delta=1e20))
     if calendar_kind == "families":
-        cfg['curvas'].update(families=dict(encoder_decoder=1,tide=1,nhits=1,nlinear=1,dlinear=1))
+        cfg['curvas'].update(families=dict(encoder_decoder=1,tide=1,nhits=1,nlinear=1,dlinear=1,nbeats=1))
     (tmp_path / "training.json").write_text(json.dumps(cfg))
     (tmp_path / "publication.json").write_text(
         json.dumps(dict(s3_base="s3://example/objects/", query_output="s3://example/results/", shards=2))

@@ -6,9 +6,9 @@ import torch
 from model_arena import ModelArena, ModelSpec, SearchSpec, PruningSpec
 from model_arena.models.complete import CompleteNetwork,CompleteParameters
 
-@pytest.mark.parametrize('family',['tide','nhits','nlinear','dlinear'])
+@pytest.mark.parametrize('family',['tide','nhits','nlinear','dlinear','nbeats'])
 def test_upstream_forward_checkpoint_and_target_gradients(family,tmp_path):
-    architecture={'hidden_size':8,'temporal_decoder_dim':8,'decoder_output_dim':8} if family=='tide' else {'mlp_units':[[8,8]]*3} if family=='nhits' else {}
+    architecture={'hidden_size':8,'temporal_decoder_dim':8,'decoder_output_dim':8} if family=='tide' else {'mlp_units':[[8,8]]*3} if family in ('nhits','nbeats') else {}
     n=CompleteNetwork(family=family,targets=2,window=6,h=3,historical=0,future=0,parameters=CompleteParameters(architecture=architecture))
     n.eval();x=torch.randn(3,6,2)*.1
     y=n(x,None,None)
@@ -29,7 +29,7 @@ def test_calendar_covariates_are_consumed(family):
     assert not torch.allclose(y,n(history,past+1,future))
     assert not torch.allclose(y,n(history,past,future+1))
 
-@pytest.mark.parametrize('family',['nlinear','dlinear'])
+@pytest.mark.parametrize('family',['nlinear','dlinear','nbeats'])
 def test_linear_family_rejects_calendar(family):
     with pytest.raises(ValueError,match='X0 only'):
         CompleteNetwork(family=family,targets=2,window=6,h=3,historical=1,future=0,parameters=CompleteParameters())
@@ -37,7 +37,7 @@ def test_linear_family_rejects_calendar(family):
 @pytest.mark.train
 def test_four_families_hpo_select_save_zero_shot(panel,spec,tmp_path):
     df,static=panel
-    models=[ModelSpec(alias=k,kind=k,trials=1) for k in ['tide','nhits','nlinear','dlinear']]
+    models=[ModelSpec(alias=k,kind=k,trials=1) for k in ['tide','nhits','nlinear','dlinear','nbeats']]
     search=SearchSpec(n_trials=1,width=[8],depth=[1],decoder_depth=[1],dropout=0.,pruner=PruningSpec(kind='patience'))
     arena=ModelArena(spec.model_copy(update={'models':models,'search':search}))
     study=arena.tune(df=df,static_df=static,epochs=2)
