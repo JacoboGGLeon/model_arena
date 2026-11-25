@@ -106,7 +106,9 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
     if calendar_kind == "csv":
         # Real training: force a plateau threshold to exercise pruning and resume.
         cfg["model"]["epochs"] = 6
-        cfg["curvas"].update(trials=2, pruner=dict(kind="patience", patience=4, min_delta=1e20))
+        cfg["curvas"].update(trials=6, encoder_kinds=["mlp", "gru", "tft_compact"],
+                             encoders=["independent"],
+                             pruner=dict(kind="patience", patience=4, min_delta=1e20))
     (tmp_path / "training.json").write_text(json.dumps(cfg))
     (tmp_path / "publication.json").write_text(
         json.dumps(dict(s3_base="s3://example/objects/", query_output="s3://example/results/", shards=2))
@@ -125,9 +127,9 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
     audit_path = project.path / "run/curvas/hpo_trials.parquet"
     audit = pl.read_parquet(audit_path)
     if calendar_kind == "csv":
-        assert audit.filter(pl.col("state") == "COMPLETE").height == 4
+        assert audit.filter(pl.col("state") == "COMPLETE").height == 12
         pruned = audit.filter(pl.col("state") == "PRUNED")
-        assert pruned.height == 4 and set(pruned["pruned_epoch"]) == {5}
+        assert pruned.height == 12 and set(pruned["pruned_epoch"]) == {5}
         for candidate in pruned["candidate"]:
             history = pl.read_parquet(project.path / f"run/curvas/loss/{candidate}_F1.parquet")
             assert history["epoch"].to_list() == [1, 2, 3, 4, 5]

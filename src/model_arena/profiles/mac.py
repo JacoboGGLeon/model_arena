@@ -44,6 +44,11 @@ class MacProject:
         from ..contracts import PruningSpec
 
         PruningSpec.model_validate(training["curvas"].get("pruner") or {})
+        kinds = training["curvas"].get("encoder_kinds", ["tft_compact"])
+        from ..contracts import SearchSpec
+        SearchSpec(encoder_kind=kinds)
+        if len(set(kinds)) != len(kinds) or training["curvas"]["trials"] < len(kinds):
+            raise ValueError("Declare distinct encoders and at least one trial per encoder")
         from ..calendar import prepare_snapshot
 
         snapshot = prepare_snapshot(

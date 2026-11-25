@@ -5,6 +5,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 
+from model_arena.encoders import ContextEncoder
 from agentic_forecasting.data import batch
 from agentic_forecasting.backbones import TFTTemporalBackbone
 
@@ -28,8 +29,13 @@ class CurveTFT(nn.Module):
         calendar_size = spec.calendar_features
         self.past_calendar = nn.Linear(calendar_size, width) if candidate.inputs in ("X1", "X3") else None
         self.future_calendar = nn.Linear(calendar_size, width) if candidate.inputs in ("X2", "X3") else None
+        self.encoder_kind = getattr(candidate, "encoder_kind", "tft_compact")
         self.encoders = nn.ModuleList()
         for _ in range(1 if candidate.encoder_design == "shared" else len(TARGETS)):
+            if self.encoder_kind != "tft_compact":
+                self.encoders.append(ContextEncoder(kind=self.encoder_kind, window=spec.window,
+                    width=width, depth=candidate.depth, dropout=dropout, activation=activations[activation], targets=len(TARGETS)))
+                continue
             encoder = TFTTemporalBackbone(width, dropout)
             encoder.input = nn.Linear(len(TARGETS), width)
             encoder.encoder = nn.LSTM(width, width, candidate.depth, batch_first=True)
@@ -52,6 +58,12 @@ class CurveTFT(nn.Module):
             projected = enc.input(history)
             if self.input_kind in ("X1", "X3"):
                 projected = projected + self.past_calendar(features["history_calendar"])
+            if self.encoder_kind != "tft_compact":
+                queries = pos.weight.expand(len(history), -1, -1)
+                if self.input_kind in ("X2", "X3"):
+                    queries = queries + self.future_calendar(features["future_calendar"])
+                representations.append(enc(projected, queries))
+                continue
             encoded, (hidden, _) = enc.encoder(projected)
             encoded = enc.history_grn(encoded)
             state = enc.state_grn(hidden[-1])

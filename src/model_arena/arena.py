@@ -152,7 +152,7 @@ class ModelArena:
 
     def tune(self, prepared=None, *, df=None, static_df=None, cv=None, n_trials=None, epochs=None):
         import optuna
-        from .pruning import make_pruner, trial_records
+        from .pruning import make_pruner, trial_records, enqueue_encoder_schedule
         data = self.prepare(prepared, df=df, static_df=static_df)
         cv = cv or self.spec.cv
         self._folds(data, cv)
@@ -160,15 +160,17 @@ class ModelArena:
         root = Path(run.path)
         space, candidates, scores, trials = self.spec.search, [], [], []
         for i, base in enumerate(self.spec.models):
-            if base.kind != "tft_compact":
+            if base.kind not in ("tft_compact", "encoder_decoder"):
                 raise ValueError("HPO requires a declared search adapter; use cross_validation for fixed models")
             sampler = optuna.samplers.TPESampler(seed=self.spec.training.seed+i)
             study = optuna.create_study(direction="minimize", sampler=sampler,
                                         pruner=make_pruner(space.pruner, epochs_per_fold=epochs or self.spec.training.epochs),
                                         storage="sqlite:///"+str(root / "hpo.sqlite3"), study_name=base.alias)
+            enqueue_encoder_schedule(study, space.encoder_kind, n_trials or space.n_trials)
             def objective(trial):
                 params = {key: trial.suggest_categorical(key, getattr(space, key))
-                          for key in ("encoder_design", "depth", "decoder_depth", "width", "activation")}
+                          for key in ("encoder_kind", "encoder_design", "depth", "decoder_depth", "width", "activation")}
+                trial.set_user_attr("reference_group", params["encoder_kind"])
                 params.update(lr=trial.suggest_float("lr", *space.lr_range, log=True),
                               weight_decay=trial.suggest_float("weight_decay", *space.wd_range, log=True),
                               dropout=space.dropout)

@@ -66,6 +66,8 @@ audit_path = project / "run/curvas/hpo_trials.parquet"
 if audit_path.is_file():
     with st.expander("Estados HPO · completados y podados"):
         audit = pl.read_parquet(audit_path)
+        audit = audit.with_columns(pl.col("parameters_json").str.json_path_match("$.encoder_kind")
+                                  .fill_null("tft_compact").alias("encoder_kind"))
         if inp != "Todos":
             audit = audit.filter(pl.col("input") == inp)
         st.dataframe(audit, use_container_width=True, hide_index=True)

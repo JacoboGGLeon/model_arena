@@ -2,7 +2,7 @@
 
 Explicit forecasting competition and observable learning histories.
 
-Version **0.1.2**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.2"`.
+Version **0.1.3**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.3"`.
 Source: https://github.com/JacoboGGLeon/model_arena · PyPI: https://pypi.org/project/model-arena-sdk/.
 
 The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. The storage profile was exercised end-to-end in ADA, including S3/Athena publication; automated tests use synthetic data.
@@ -30,7 +30,7 @@ publication = arena.publish(release, destination='publications')
 The default installation includes the complete forecasting and monitoring runtime. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
 
 ```bash
-python -m pip install "model-arena-sdk==0.1.2"
+python -m pip install "model-arena-sdk==0.1.3"
 ```
 
 In ADA, keep the existing Artifactory indexes and approved CUDA-compatible PyTorch installation. No package index or CUDA build is forced by the SDK. Default installation includes PyTorch and the dashboard dependencies; imports remain lazy and reading results does not initialize CUDA. Existing extras remain available for compatibility.
@@ -62,7 +62,7 @@ An explicit upgrade of an unpublished SDK 0.1 run is available through `model_ar
 
 The disk reserve is a point-in-time guard, not a guarantee of capacity for an entire run. The model mathematics, target scaling and accounting rules are unchanged.
 
-## Calendar Studio integration (0.1.2)
+## Calendar Studio integration (0.1.3)
 
 The complete SDK installation includes Calendar Studio. Its use is explicit: Model Arena still accepts external CSV/Parquet calendars and the generic forecasting core does not prescribe a calendar rule engine.
 
@@ -92,7 +92,7 @@ New publications add a separate `calendar_provenance` dataset and include frozen
 
 For other projects, `model_arena.calendar.to_features(calendar, time_col="ds")` returns an independent date-feature table. DataFrames require an explicit `date_col`; continuous finite numeric calendar features are permitted outside the MAC adapter. Join/broadcast this table to the panel as required by your schema.
 
-## Optional HPO patience (0.1.2)
+## Optional HPO patience (0.1.3)
 
 The new ADA deployment uses 15 trials per input, at most 15 epochs per fold, and four consecutive epochs without improvement on fixed temporal validation. The first trial of each input completes all selection folds to retain a complete reference; subsequent stagnant trials are marked `PRUNED`. The patience counter resets for each fold. A pruned candidate is discarded as a whole; partial fold results do not enter winner selection. The final fit still runs 75 epochs from scratch, without pruning.
 
@@ -110,3 +110,14 @@ Supply these contracts in `ArenaSpec(training=training, search=search, ...)`. Ge
 One step is one reported epoch. With the first best value at epoch 1, unchanged losses at epochs 2–5 prune at the end of epoch 5. Any strictly lower loss resets patience when `min_delta=0`; ties count as no improvement. Reports use distinct step ranges per fold, and the pruner compares values only inside the current fold. `FoldPatiencePruner` implements this exact policy through Optuna's `BasePruner`; it is not Optuna's `PatientPruner` wrapper or a cross-trial Median/Hyperband rule. No smoothing is applied to the reported curves.
 
 The 15-attempt limit counts `COMPLETE` plus `PRUNED`. Disk-interrupted retries retain their original identity and parameters. Trial state, pruning fold/epoch and parameters are retained in Parquet; only complete trials have a final objective value. New publications add `hpo_trials`, accessible on demand in Observatory, while their partial epoch curves remain available. Reopening an old run does not modify its configuration or frozen runtime.
+
+## Interchangeable encoders (0.1.3)
+
+Use `ModelSpec(alias="X3", kind="encoder_decoder", historical_features=[...], future_features=[...])`
+with `SearchSpec(n_trials=25, encoder_kind=["mlp", "gru", "tft_compact"], pruner=PruningSpec(kind="patience"))`.
+`encoder_kind` selects architecture; `encoder_design` selects shared versus independent encoders across targets. Every target retains its own horizon/quantile head. The MAC adapter keeps saldo and variación.
+
+MAC configuration uses `curvas.encoder_kinds=["mlp","gru","tft_compact"]` and `curvas.trials=25`.
+This is **25 total trials per input**, balanced 9/8/8 in declared order. For 25 per encoder use 75 total trials per input. Each encoder/input retains its first complete reference before pruning. One TPE study per input samples the remaining hyperparameters across the balanced family allocation; these are not isolated per-encoder studies. All 4 inputs use at most 100 candidates / 300 fold fits at the 25-total setting. Failed disk retries retain identity and do not consume another completed/pruned candidate slot.
+
+Existing projects keep frozen code/configuration and default to TFT when encoder_kind is absent. Use a new project to explore all three families. Stored candidate JSON and trial parameter JSON identify the architecture. No model quality or runtime advantage is claimed without a real ADA comparison.

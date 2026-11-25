@@ -19,7 +19,7 @@ class ModelRegistry:
 
     def create(self, model_spec, arena_spec):
         kind = model_spec.kind
-        if kind == "tft_compact" and kind not in self._factories:
+        if kind in ("tft_compact", "encoder_decoder") and kind not in self._factories:
             from .tft import TFTCompact
             return TFTCompact(model_spec, arena_spec)
         if kind == "historical_quantile" and kind not in self._factories:

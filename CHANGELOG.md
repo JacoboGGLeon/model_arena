@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.3
+
+- Compare MLP, GRU and compact TFT encoders with the same joint-target quantile decoder.
+- Add balanced, resume-safe family allocation within each input's trial budget.
+- Retain a complete reference per encoder/input before patience pruning.
+- Preserve TFT defaults, frozen historical projects and existing MAC output layouts.
+
 ## 0.1.2
 
 - Accept Calendar Studio artifacts, artifact directories, external Parquet/CSV and DataFrame calendars through an explicit MAC adapter.

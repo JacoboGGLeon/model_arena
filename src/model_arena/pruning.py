@@ -22,7 +22,11 @@ class FoldPatiencePruner(optuna.pruners.BasePruner):
         self.epochs_per_fold = epochs_per_fold
 
     def prune(self, study, trial):
-        if len(study.get_trials(states=(optuna.trial.TrialState.COMPLETE,))) < self.spec.min_completed_trials:
+        completed = study.get_trials(states=(optuna.trial.TrialState.COMPLETE,))
+        group = trial.user_attrs.get("reference_group")
+        if group is not None:
+            completed = [t for t in completed if t.user_attrs.get("reference_group") == group]
+        if len(completed) < self.spec.min_completed_trials:
             return False
         if not trial.intermediate_values:
             return False
@@ -49,6 +53,21 @@ def make_pruner(settings, *, epochs_per_fold):
     if spec.kind == "none":
         return optuna.pruners.NopPruner()
     return FoldPatiencePruner(epochs_per_fold=epochs_per_fold, **spec.model_dump(exclude={"kind"}))
+
+
+def enqueue_encoder_schedule(study, kinds, n_trials, *, parameter="encoder_kind"):
+    """Balanced fixed family allocation; Optuna tunes parameters within each family.
+
+    Queue only once. Disk-recovery trials are queued separately with exact params.
+    """
+    kinds = list(kinds)
+    if not kinds or len(kinds) != len(set(kinds)) or set(kinds)-{"mlp", "gru", "tft_compact"}:
+        raise ValueError("Declare distinct encoder kinds: mlp, gru, tft_compact")
+    if n_trials < len(kinds):
+        raise ValueError("Trial budget must cover every declared encoder")
+    if not study.get_trials():
+        for index in range(n_trials):
+            study.enqueue_trial({parameter: kinds[index % len(kinds)]})
 
 
 def report_epoch(trial, value, *, epoch, fold_index, epochs_per_fold, fold):

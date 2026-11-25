@@ -10,7 +10,7 @@ import polars as pl
 import torch
 from model_arena.disk import check_space, DiskSpaceError
 from model_arena.hpo_resume import enqueue_interrupted
-from model_arena.pruning import make_pruner, report_epoch, trial_records
+from model_arena.pruning import make_pruner, report_epoch, trial_records, enqueue_encoder_schedule
 from model_arena.loss_store import write_parquet
 from entrenar_curvas import (ROOT, read, write, spec_for, execute, sha, make_frame)
 from agentic_forecasting import Series
@@ -51,6 +51,7 @@ def population(run, config, spec):
 
 def candidate_for(trial, inp, cfg):
     return SimpleNamespace(id=trial.user_attrs.get('resume_candidate_id', f'{inp}_T{trial.number:04d}'),inputs=inp,
+        encoder_kind=trial.suggest_categorical('encoder_kind',cfg['encoder_kinds']) if 'encoder_kinds' in cfg else 'tft_compact',
         encoder_design=trial.suggest_categorical('encoder',cfg['encoders']),
         depth=trial.suggest_categorical('encoder_depth',cfg['depths']),
         decoder_depth=trial.suggest_categorical('decoder_depth',cfg['decoder_depths']),
@@ -163,9 +164,12 @@ def run_study(run, config_path, device, *, stage="all"):
         sampler=pickle.loads(sampler_path.read_bytes()) if sampler_path.exists() else optuna.samplers.TPESampler(seed=spec.seed+cfg['inputs'].index(inp))
         pruner=make_pruner(cfg.get('pruner'),epochs_per_fold=spec.epochs)
         study=optuna.create_study(study_name=inp,storage='sqlite:///'+str(root/'hpo.sqlite3'),load_if_exists=True,direction='minimize',sampler=sampler,pruner=pruner)
+        if 'encoder_kinds' in cfg:
+            enqueue_encoder_schedule(study,cfg['encoder_kinds'],cfg['trials'])
         def objective(trial):
             check_space(root, stage=f'trial {inp} {trial.number}')
             candidate=candidate_for(trial,inp,cfg)
+            trial.set_user_attr('reference_group',candidate.encoder_kind)
             trial.set_user_attr('candidate_id',candidate.id)
             write(root/f'{candidate.id}.json',vars(candidate))
             scores=[]

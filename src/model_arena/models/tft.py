@@ -7,9 +7,12 @@ from pydantic import Field
 
 from ..contracts import Contract
 from ..data import scale_for
+from ..encoders import ContextEncoder
+from typing import Literal
 
 
 class TFTParameters(Contract):
+    encoder_kind: Literal["mlp", "gru", "tft_compact"] = "tft_compact"
     encoder_design: str = "shared"
     depth: int = Field(default=2, ge=1)
     decoder_depth: int = Field(default=1, ge=1)
@@ -51,19 +54,23 @@ class Encoder(nn.Module):
 
 
 class Network(nn.Module):
-    def __init__(self, targets, h, historical, future, params):
+    def __init__(self, targets, h, historical, future, params, window=None):
         super().__init__()
         activations = {"ReLU": nn.ReLU, "Mish": nn.Mish, "GELU": nn.GELU, "Tanh": nn.Tanh}
         if params.activation not in activations or params.encoder_design not in ("shared", "independent"):
             raise ValueError("Unsupported activation or encoder design")
-        if params.width % 4:
+        if params.encoder_kind == "tft_compact" and params.width % 4:
             raise ValueError("TFT width must be divisible by four attention heads")
         width, act = params.width, activations[params.activation]
         self.past_calendar = nn.Linear(historical, width) if historical else None
         self.future_calendar = nn.Linear(future, width) if future else None
         count = 1 if params.encoder_design == "shared" else targets
-        self.encoders = nn.ModuleList(Encoder(targets, width, params.depth, params.dropout, act)
-                                      for _ in range(count))
+        self.encoder_kind = params.encoder_kind
+        self.encoders = nn.ModuleList(
+            Encoder(targets, width, params.depth, params.dropout, act)
+            if params.encoder_kind == "tft_compact" else ContextEncoder(
+                kind=params.encoder_kind, window=window, width=width, depth=params.depth,
+                dropout=params.dropout, activation=act, targets=targets) for _ in range(count))
         self.positions = nn.ModuleList(nn.Embedding(h, width) for _ in range(count))
         heads = []
         for _ in range(targets):
@@ -79,6 +86,12 @@ class Network(nn.Module):
             projected = enc.input(history)
             if self.past_calendar is not None:
                 projected = projected + self.past_calendar(past)
+            if self.encoder_kind != "tft_compact":
+                queries = pos.weight.expand(len(history), -1, -1)
+                if self.future_calendar is not None:
+                    queries = queries + self.future_calendar(future)
+                representations.append(enc(projected, queries))
+                continue
             encoded, (hidden, _) = enc.encoder(projected)
             encoded = enc.history_grn(encoded)
             state = enc.state_grn(hidden[-1])
@@ -110,7 +123,7 @@ class TFTCompact:
             torch.manual_seed(arena_spec.training.seed)
             self.network = Network(len(arena_spec.schema.target_cols), arena_spec.h,
                                    len(model_spec.historical_features), len(model_spec.future_features),
-                                   self.params).to(self.device)
+                                   self.params, window=arena_spec.window).to(self.device)
 
     def _batch(self, data, origins, future=None, truth=False):
         histories, scales, pasts, futures, targets = [], [], [], [], []

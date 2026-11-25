@@ -60,6 +60,7 @@ class PruningSpec(Contract):
 
 class SearchSpec(Contract):
     n_trials: int = Field(default=15, ge=1)
+    encoder_kind: list[Literal["mlp", "gru", "tft_compact"]] = ["tft_compact"]
     pruner: PruningSpec = Field(default_factory=PruningSpec)
     encoder_design: list[Literal["shared", "independent"]] = ["shared", "independent"]
     depth: list[int] = [2, 3]
@@ -72,7 +73,9 @@ class SearchSpec(Contract):
 
     @model_validator(mode="after")
     def valid_space(self):
-        for values in (self.encoder_design, self.depth, self.decoder_depth, self.width, self.activation):
+        if len(self.encoder_kind) != len(set(self.encoder_kind)):
+            raise ValueError("Encoder kinds must be distinct")
+        for values in (self.encoder_kind, self.encoder_design, self.depth, self.decoder_depth, self.width, self.activation):
             if not values:
                 raise ValueError("Search dimensions cannot be empty")
         for values in (self.depth, self.decoder_depth, self.width):
@@ -112,7 +115,7 @@ class ArenaSpec(Contract):
             raise ValueError("At least one model and unique aliases are required")
         if self.quantiles != sorted(set(self.quantiles)) or not all(0 < q < 1 for q in self.quantiles):
             raise ValueError("Quantiles must be unique, increasing and between zero and one")
-        if self.quantiles != [0.025, 0.5, 0.975] and any(m.kind == "tft_compact" for m in self.models):
+        if self.quantiles != [0.025, 0.5, 0.975] and any(m.kind in ("tft_compact", "encoder_decoder") for m in self.models):
             raise ValueError("This TFT implementation supports quantiles .025, .5, .975")
         if self.freq is None and self.calendar is None:
             raise ValueError("Declare a frequency or an authoritative calendar")
