@@ -240,9 +240,12 @@ def run_study(run, config_path, device, *, stage="all"):
     write_parquet(pl.DataFrame(trial_audit,schema_overrides={
         'objective_value':pl.Float64,'last_intermediate_value':pl.Float64,
         'pruned_fold':pl.String,'pruned_epoch':pl.Int64}),root/'hpo_trials.parquet')
-    scores=pl.concat(score_frames);write_parquet(scores,root/'scores.parquet')
+    scores=pl.concat(score_frames,how='diagonal_relaxed')
+    if 'family' in scores.columns:scores=scores.with_columns(pl.col('family').fill_null('encoder_decoder'))
+    write_parquet(scores,root/'scores.parquet')
     write(root/'candidatos.json',trials)
-    for name, groups in [('finalists_budget.parquet',['budget','family','input']),('finalists_total.parquet',['family','input'])]:
+    family_dims=['family'] if 'family' in scores.columns else []
+    for name, groups in [('finalists_budget.parquet',['budget',*family_dims,'input']),('finalists_total.parquet',[*family_dims,'input'])]:
         finalists=scores.group_by(*groups,'candidate').agg(pl.col('score').mean()).sort(*groups,'score','candidate').unique(groups,keep='first')
         write_parquet(finalists,root/name)
     if stage == "tune":
