@@ -54,16 +54,18 @@ class MacProject:
         kinds = training["curvas"].get("encoder_kinds", ["tft_compact"])
         from ..contracts import SearchSpec
         SearchSpec(encoder_kind=kinds)
-        if families.get("encoder_decoder",len(kinds)) < len(kinds):
-            raise ValueError("Encoder–Decoder family budget must cover all declared encoders")
-        if len(set(kinds)) != len(kinds) or training["curvas"]["trials"] < len(kinds):
-            raise ValueError("Declare distinct encoders and at least one trial per encoder")
+        if len(set(kinds)) != len(kinds):
+            raise ValueError("Declare distinct encoders")
+        if "encoder_decoder" in families or "families" not in training["curvas"]:
+            encoder_trials = families["encoder_decoder"] if families else training["curvas"]["trials"]
+            if encoder_trials < len(kinds):
+                raise ValueError("Encoder–Decoder family budget must cover all declared encoders")
         from ..calendar import prepare_snapshot
 
         snapshot = prepare_snapshot(
             calendar=calendar, calendar_path=calendar_path, n_features=training["model"].get("calendar_features")
         )
-        from ..input_spec import resolve_inputs, study_plan
+        from ..input_spec import InputSearchSpec, resolve_inputs, study_plan
         from ..mac_policy import MacPolicy
 
         curves = training["curvas"]
@@ -72,6 +74,7 @@ class MacProject:
         curves["calendar_sha256"] = snapshot.provenance["calendar_sha256"]
         if type(curves["final_epochs"]) is not int or curves["final_epochs"] < 1:
             raise ValueError("final_epochs debe ser un entero positivo")
+        curves["input_search"] = InputSearchSpec.model_validate(curves.get("input_search", {})).model_dump()
         curves["policies"] = MacPolicy.model_validate(curves.get("policies", {})).model_dump(mode="json")
         study_plan(curves, training["model"]["epochs"])
         check_space(path, stage="crear proyecto")
@@ -143,12 +146,13 @@ class MacProject:
 
     def plan(self):
         """Describe the frozen study budget before training."""
-        from ..input_spec import study_plan
+        from ..input_spec import InputSearchSpec, study_plan
 
         training = read_json(self.path / "training.json")
         studies = study_plan(training["curvas"], training["model"]["epochs"])
         return dict(
             studies=studies,
+            input_search=InputSearchSpec.model_validate(training["curvas"].get("input_search", {})).model_dump(),
             candidate_configurations=sum(item["trials"] for item in studies),
             hpo_fits=sum(item["trials"] * item["folds"] for item in studies),
             final_epochs=training["curvas"].get("final_epochs", 75),

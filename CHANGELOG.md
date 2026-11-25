@@ -1,3 +1,9 @@
+# 0.1.7
+
+- Add MAC HPO mode family_objective with a shared budget across compatible input aliases.
+- Reserve configurable startup coverage per input, then allow free input choice via TPE.
+- Preserve fixed-input schedules and existing project identities. Record each trial's actual input and keep retry parameters across interruptions.
+
 # 0.1.6
 
 - Derive MAC model input widths and ordered feature projections from the frozen calendar. Add declarative input aliases, family compatibility checks and a preflight HPO plan.

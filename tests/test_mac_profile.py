@@ -13,7 +13,7 @@ from model_arena.storage import digest
 
 
 @pytest.mark.train
-@pytest.mark.parametrize("calendar_kind", ["csv", "parquet", "artifact", "families", "dates_only"])
+@pytest.mark.parametrize("calendar_kind", ["csv", "parquet", "artifact", "families", "dates_only", "pooled"])
 def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypatch, calendar_kind):
     # Subprocesses inherit the CPU torch installation used by this test session.
     import torch
@@ -129,6 +129,13 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
         cfg["curvas"].update(inputs=["X0"], final_epochs=2)
     if calendar_kind == "families":
         cfg['curvas'].update(families=dict(encoder_decoder=1,tide=1,nhits=1,nlinear=1,dlinear=1,nbeats=1))
+    if calendar_kind == "pooled":
+        del cfg["curvas"]["trials"]
+        cfg["curvas"].update(
+            families={"tide": 5, "nhits": 5},
+            input_search={"mode": "family_objective", "startup_trials_per_input": 1},
+            final_epochs=2,
+        )
     (tmp_path / "training.json").write_text(json.dumps(cfg))
     (tmp_path / "publication.json").write_text(
         json.dumps(dict(s3_base="s3://example/objects/", query_output="s3://example/results/", shards=2))
@@ -145,6 +152,11 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
         assert project.plan()["final_epochs"] == 2
         assert project.plan()["hpo_fits"] == 12
         assert project.plan()["studies"][-1]["future"] == ["f001"]
+    if calendar_kind == "pooled":
+        plan = project.plan()
+        assert len(plan["studies"]) == 4
+        assert plan["candidate_configurations"] == 20
+        assert plan["hpo_fits"] == 60
     project.prepare().tune()
     import polars as pl
 
@@ -158,6 +170,21 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
             history = pl.read_parquet(project.path / f"run/curvas/loss/{candidate}_F1.parquet")
             assert history["epoch"].to_list() == [1, 2, 3, 4, 5]
             assert not (project.path / f"run/curvas/modelos/{candidate}_F1.pt").exists()
+        project.tune()
+        assert pl.read_parquet(audit_path).equals(audit)
+    if calendar_kind == "pooled":
+        assert audit.height == 20
+        for family in ("tide", "nhits"):
+            for target in ("saldo", "variacion"):
+                study = optuna.load_study(
+                    study_name=f"pooled_{family}_{target}",
+                    storage=f"sqlite:///{project.path / 'run/curvas/hpo.sqlite3'}",
+                )
+                assert [trial.params["input"] for trial in study.trials[:4]] == ["X0", "X1", "X2", "X3"]
+                assert len(study.trials) == 5
+        for row in audit.to_dicts():
+            assert row["candidate"].startswith(row["input"] + "_")
+            assert json.loads(row["parameters_json"])["input"] == row["input"]
         project.tune()
         assert pl.read_parquet(audit_path).equals(audit)
     project.select().fit()
@@ -191,6 +218,8 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
     assert manifest["datasets"]["hpo_trials"]["rows"] == audit.height
     assert manifest["calendar_provenance"]["feature_count"] == width
     assert [t["id"] for t in manifest["view"]["targets"]] == ["saldo", "variacion"]
+    if calendar_kind == "pooled":
+        assert manifest["input_search"]["mode"] == "family_objective"
     if calendar_kind == "parquet":
         assert manifest["policies"]["selection_metric"] == "scaled_mae"
         assert manifest["policies"]["fallback"] == ["global"]

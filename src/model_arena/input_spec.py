@@ -1,10 +1,16 @@
 """Resolve named input configurations against the frozen calendar."""
 
 import re
+from typing import Literal
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 
 from .contracts import Contract
+
+
+class InputSearchSpec(Contract):
+    mode: Literal["per_input", "family_objective"] = "per_input"
+    startup_trials_per_input: int = Field(default=4, ge=1, strict=True)
 
 
 class InputSpec(Contract):
@@ -48,8 +54,9 @@ def resolve_inputs(names, declared, calendar_features):
 def study_plan(curves, epochs, *, folds=3):
     from .models.complete import FAMILIES, capabilities
 
+    search = InputSearchSpec.model_validate(curves.get("input_search", {}))
     definitions = curves.get("input_specs")
-    families = curves.get("families", {"encoder_decoder": curves["trials"]})
+    families = curves["families"] if "families" in curves else {"encoder_decoder": curves["trials"]}
     requested = curves.get("family_inputs", {})
     for family, inputs in requested.items():
         if family not in families or not inputs or set(inputs) - set(curves["inputs"]):
@@ -76,4 +83,30 @@ def study_plan(curves, epochs, *, folds=3):
     missing = set(families) - {item["family"] for item in studies}
     if missing:
         raise ValueError(f"Familias sin inputs compatibles: {sorted(missing)}")
-    return studies
+    if search.mode == "per_input":
+        return studies
+
+    grouped = {}
+    for item in studies:
+        grouped.setdefault((item["family"], item["objective"]), []).append(item)
+    pooled = []
+    for (family, objective), options in grouped.items():
+        if len(options) == 1:
+            pooled.append(options[0])
+            continue
+        trials = options[0]["trials"]
+        startup = search.startup_trials_per_input
+        if startup * len(options) > trials:
+            raise ValueError(
+                f"{family}/{objective}: {len(options)} inputs × {startup} trials iniciales "
+                f"requieren al menos {len(options) * startup} trials; configurados: {trials}"
+            )
+        pooled.append(dict(
+            family=family, objective=objective, trials=trials, folds=folds, epochs=epochs,
+            inputs=[item["input"] for item in options], startup_trials_per_input=startup,
+            input_features={
+                item["input"]: {"historical": item["historical"], "future": item["future"]}
+                for item in options
+            },
+        ))
+    return pooled

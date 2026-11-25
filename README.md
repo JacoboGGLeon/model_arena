@@ -2,7 +2,7 @@
 
 Explicit forecasting competition and observable learning histories.
 
-Version **0.1.6**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.6"`.
+Version **0.1.7**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.7"`.
 Source: https://github.com/JacoboGGLeon/model_arena · PyPI: https://pypi.org/project/model-arena-sdk/.
 
 The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. The storage profile was exercised end-to-end in ADA, including S3/Athena publication; automated tests use synthetic data.
@@ -30,7 +30,7 @@ publication = arena.publish(release, destination='publications')
 The default installation includes the complete forecasting and monitoring runtime. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
 
 ```bash
-python -m pip install "model-arena-sdk==0.1.6"
+python -m pip install "model-arena-sdk==0.1.7"
 ```
 
 In ADA, keep the existing Artifactory indexes and approved CUDA-compatible PyTorch installation. No package index or CUDA build is forced by the SDK. Default installation includes PyTorch and the dashboard dependencies; imports remain lazy and reading results does not initialize CUDA. Existing extras remain available for compatibility.
@@ -167,3 +167,25 @@ project.export_layout("exports/engine3_f3.csv", engine="engine3", fold="F3")
 ```
 
 `export_layout` uses the prepared release, or prepares it from completed predictions. Observatory exports the published Engine 2 or Engine 3 segment as a complete CSV. New MAC manifests declare policies, targets, units, metrics, quantiles and routing. Earlier publications use compatibility defaults. See [ADR 0009](docs/adr/0009-schema-driven-mac-profiles.md).
+
+
+## Shared input search in MAC (0.1.7)
+
+Set `curvas.input_search` before creating an ADA project:
+
+```json
+{"mode": "family_objective", "startup_trials_per_input": 4}
+```
+
+In this mode, `curvas.families` budgets apply once to each family and objective.
+Only compatible inputs enter the categorical search. With four compatible inputs
+and a budget of 25, Optuna first evaluates four recipes per input, then has nine
+trials with free input choice. For families with only one compatible input, the
+budget and scheduling are the same as before. Pruned trials consume budget.
+The per-account, per-target ranking operates on completed candidates as before.
+
+The ADA bundle enables this mode with TiDE, NHITS, NLinear, DLinear and NBEATS at
+25 trials each. That is 250 HPO trials (750 maximum fold fits). Select TiDE or NHITS
+alone for 50 trials, or both for 100. Use `project.plan()` to inspect the resolved
+schedule. An existing configuration with no `input_search` retains `per_input`.
+To switch modes, create a new project. See [ADR 0010](docs/adr/0010-shared-input-hpo.md).

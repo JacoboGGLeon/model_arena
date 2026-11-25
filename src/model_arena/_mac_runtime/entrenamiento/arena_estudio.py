@@ -193,32 +193,62 @@ def run_study(run, config_path, device, *, stage="all"):
     cfg=config['curvas'];candidates=[];score_frames=[];trials=[];trial_audit=[]
     (root/'predicciones').mkdir(exist_ok=True)
     for task in study_plan(cfg, spec.epochs):
-        inp,family,budget,target = (task[k] for k in ('input','family','trials','objective'))
+        family, budget, target = (task[k] for k in ('family', 'trials', 'objective'))
         cfg={**config['curvas'],'family':family,'trials':budget,'target':target}
-        study_key=inp if 'families' not in cfg else inp+'_'+family
-        if target:study_key += '_'+target
+        pooled_inputs = task.get('inputs')
+        fixed_input = task.get('input')
+        encoder_kinds = cfg.get('encoder_kinds', []) if family == 'encoder_decoder' else []
+        if pooled_inputs:
+            study_key = f'pooled_{family}_{target}'
+            startup = task['startup_trials_per_input']
+            sampler_options = dict(seed=spec.seed, n_startup_trials=startup * len(pooled_inputs))
+        else:
+            study_key = fixed_input if 'families' not in cfg else f'{fixed_input}_{family}'
+            if target:
+                study_key += f'_{target}'
+            sampler_options = dict(seed=spec.seed+cfg['inputs'].index(fixed_input))
         sampler_path=root/f'{study_key}_sampler.pkl'
-        sampler=pickle.loads(sampler_path.read_bytes()) if sampler_path.exists() else optuna.samplers.TPESampler(seed=spec.seed+cfg['inputs'].index(inp))
+        sampler=pickle.loads(sampler_path.read_bytes()) if sampler_path.exists() else optuna.samplers.TPESampler(**sampler_options)
         pruner=make_pruner(cfg.get('pruner'),epochs_per_fold=spec.epochs)
         study=optuna.create_study(study_name=study_key,storage='sqlite:///'+str(root/'hpo.sqlite3'),load_if_exists=True,direction='minimize',sampler=sampler,pruner=pruner)
-        if family=='encoder_decoder' and 'encoder_kinds' in cfg:
-            enqueue_encoder_schedule(study,cfg['encoder_kinds'],cfg['trials'])
+        if pooled_inputs:
+            queued_slots = {trial.user_attrs.get('input_startup_slot') for trial in study.get_trials()}
+            for round_index in range(startup):
+                for input_index, alias in enumerate(pooled_inputs):
+                    slot = round_index * len(pooled_inputs) + input_index
+                    if slot in queued_slots:
+                        continue
+                    params = {'input': alias}
+                    if encoder_kinds:
+                        params['encoder_kind'] = encoder_kinds[round_index % len(encoder_kinds)]
+                    study.enqueue_trial(params, user_attrs={'input_startup_slot': slot})
+        elif encoder_kinds:
+            enqueue_encoder_schedule(study, encoder_kinds, budget)
+
         def objective(trial):
+            inp = trial.suggest_categorical('input', pooled_inputs) if pooled_inputs else fixed_input
+            trial.set_user_attr('family', family)
+            if target:
+                trial.set_user_attr('target', target)
+            if pooled_inputs:
+                prefix = f'{inp}_{family}' + (f'_{target}' if target else '')
+                trial.set_user_attr('candidate_id', trial.user_attrs.get('resume_candidate_id', f'{prefix}_T{trial.number:04d}'))
             check_space(root, stage=f'trial {inp} {trial.number}')
             candidate=candidate_for(trial,inp,cfg)
             if 'input_specs' in cfg:
                 candidate.input_features = cfg['input_specs'][inp]
                 candidate.transform = cfg['policies']['transform']
                 candidate.selection_metric = cfg['policies']['selection_metric']
-            if 'families' in cfg and family=='encoder_decoder' and 'resume_candidate_id' not in trial.user_attrs:
+            if pooled_inputs:
+                candidate.id = trial.user_attrs['candidate_id']
+            elif 'families' in cfg and family=='encoder_decoder' and 'resume_candidate_id' not in trial.user_attrs:
                 candidate.id=f'{inp}_{family}_T{trial.number:04d}'
             if target:
                 candidate.target=target
                 candidate.encoder_design='single'
-                if 'resume_candidate_id' not in trial.user_attrs:candidate.id=study_key+f'_T{trial.number:04d}'
-                trial.set_user_attr('target',target)
-            trial.set_user_attr('family',family)
-            trial.set_user_attr('reference_group',candidate.encoder_kind)
+                if not pooled_inputs and 'resume_candidate_id' not in trial.user_attrs:
+                    candidate.id=study_key+f'_T{trial.number:04d}'
+            trial.set_user_attr('reference_group',f'{inp}/{candidate.encoder_kind}' if pooled_inputs else candidate.encoder_kind)
             trial.set_user_attr('candidate_id',candidate.id)
             write(root/f'{candidate.id}.json',vars(candidate))
             scores=[]
@@ -245,28 +275,28 @@ def run_study(run, config_path, device, *, stage="all"):
                 import traceback
                 traceback.print_exc()
                 raise
-        enqueue_interrupted(study, study_key)
+        enqueue_interrupted(study, study_key, pooled=bool(pooled_inputs))
         remaining=cfg['trials']-len(study.get_trials(states=(optuna.trial.TrialState.COMPLETE,optuna.trial.TrialState.PRUNED)))
         def persist_sampler(study, trial):
             temp=sampler_path.with_suffix('.tmp')
             temp.write_bytes(pickle.dumps(study.sampler));temp.replace(sampler_path)
-            audit=pl.DataFrame(trial_audit+trial_records(study,inp),schema_overrides={
-                'objective_value':pl.Float64,'last_intermediate_value':pl.Float64,
+            audit=pl.DataFrame(trial_audit+trial_records(study,fixed_input),schema_overrides={
+                'input':pl.String,'objective_value':pl.Float64,'last_intermediate_value':pl.Float64,
                 'pruned_fold':pl.String,'pruned_epoch':pl.Int64})
             write_parquet(audit,root/'hpo_trials.parquet')
         if remaining>0:study.optimize(objective,n_trials=remaining,callbacks=[persist_sampler])
-        trial_audit.extend(trial_records(study,inp))
+        trial_audit.extend(trial_records(study,fixed_input))
         if not study.get_trials(states=(optuna.trial.TrialState.COMPLETE,)):
-            raise ValueError('Sin candidato completo para '+inp+'; revisa hpo_trials.parquet')
+            raise ValueError('Sin candidato completo para '+study_key+'; revisa hpo_trials.parquet')
         for trial in study.get_trials(states=(optuna.trial.TrialState.COMPLETE,)):
-            candidate_id=trial.user_attrs.get('candidate_id',f'{inp}_T{trial.number:04d}')
+            candidate_id=trial.user_attrs.get('candidate_id',f'{fixed_input}_T{trial.number:04d}')
             candidate=SimpleNamespace(**read(root/f'{candidate_id}.json'))
             candidates.append(candidate)
             score_frames.append(pl.read_parquet(root/f'{candidate.id}_scores.parquet'))
             trials.append(dict(**vars(candidate),score=trial.value))
-        write(run/'estado_curvas.json',dict(estado='HPO',input=inp,trials_completos=len(trials)))
+        write(run/'estado_curvas.json',dict(estado='HPO',input=fixed_input,study=study_key,trials_completos=len(trials)))
     write_parquet(pl.DataFrame(trial_audit,schema_overrides={
-        'objective_value':pl.Float64,'last_intermediate_value':pl.Float64,
+        'input':pl.String,'objective_value':pl.Float64,'last_intermediate_value':pl.Float64,
         'pruned_fold':pl.String,'pruned_epoch':pl.Int64}),root/'hpo_trials.parquet')
     scores=pl.concat(score_frames,how='diagonal_relaxed')
     if 'family' in scores.columns:scores=scores.with_columns(pl.col('family').fill_null('encoder_decoder'))

@@ -89,8 +89,10 @@ def trial_records(study, inp):
     records = []
     for trial in study.get_trials():
         attrs = trial.user_attrs
+        actual_input = trial.params.get("input", trial.system_attrs.get("fixed_params", {}).get("input", inp))
         records.append(dict(
-            input=inp, candidate=attrs.get("candidate_id", attrs.get("resume_candidate_id", f"{inp}_T{trial.number:04d}")),
+            input=actual_input,
+            candidate=attrs.get("candidate_id", attrs.get("resume_candidate_id", f"{actual_input}_T{trial.number:04d}")),
             trial_number=trial.number, state=trial.state.name,
             value=trial.value if trial.state == optuna.trial.TrialState.COMPLETE else None,
             objective_value=trial.value if trial.state == optuna.trial.TrialState.COMPLETE else None,

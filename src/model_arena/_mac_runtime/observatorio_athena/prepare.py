@@ -316,6 +316,7 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
   datasets={name:dict(columns=[dict(name=f.name,type=athena_type(f.type)) for f in sc],rows=sum(x['rows'] for x in writer.entries if x['dataset']==name)) for name,sc in SCHEMAS.items() if name!='publications'},
   protocol='F1–F3 usados en selección; no Test independiente. Layout Engine2 preservado, selección MAC3 explícita. Engine3 port literal MAC2 separado de diagnóstico MAC3.',
   policies=report.get('config',{}).get('curvas',{}).get('policies',{}),
+  input_search=report.get('config',{}).get('curvas',{}).get('input_search',{'mode':'per_input'}),
   view=publication_view(
    report.get('config',{}).get('curvas',{}).get('objectives',['saldo','variacion']),
    [.025,.5,.975],labels={'saldo':'Saldo','variacion':'Variación'},
