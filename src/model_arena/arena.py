@@ -9,6 +9,7 @@ import pandas as pd
 
 from .contracts import (ArenaSpec, ModelSpec, PanelSchema, RunRef, StudyResult, SelectionResult,
                         ArtifactRef)
+from .scoring import best_candidate, pinball_error
 from .data import PreparedData, prepare_panel, future_dates, pinball, scale_for
 from .models.base import ModelRegistry
 from .results import Results
@@ -76,11 +77,10 @@ class ModelArena:
         return RunRef(run_id=path.name, path=str(path), signature=identity)
 
     def _folds(self, data, cv):
-        step = cv.step_size or self.spec.h
-        first = len(data.axis)-self.spec.h-(cv.n_windows-1)*step
-        if first < self.spec.window + self.spec.h:
-            raise ValueError("Insufficient history for temporal protocol")
-        return [(f"F{i+1}", first+i*step) for i in range(cv.n_windows)]
+        from .models.engine import temporal_folds
+
+        return temporal_folds(len(data.axis), window=self.spec.window, horizon=self.spec.h,
+                              count=cv.n_windows, step=cv.step_size or self.spec.h)
 
     def _scores(self, data, model, end, candidate, inp, fold):
         refs = [(key, end) for key in data.ids]
@@ -216,7 +216,7 @@ class ModelArena:
         if by != self.spec.schema.id_col:
             raise ValueError("This release selects one winner per entity")
         identity = read_json(root / "identity.json")
-        if identity["spec"] != self.describe():
+        if ArenaSpec.model_validate(identity["spec"]).model_dump(mode="json") != self.describe():
             raise ValueError("Study belongs to a different resolved specification")
         population = self.spec.schema.population_col
         training_ids = set(inventory.entity if population is None else
@@ -242,9 +242,9 @@ class ModelArena:
                 evidence = admissible[admissible.entity.isin(peers.entity)] if origin == "GROUP" else admissible
             rank = evidence.groupby(["candidate", "input"]).agg(
                 value=("value", "mean"), baseline_value=("baseline_value", "mean")).reset_index()
-            winner = rank.sort_values(["value", "candidate"]).iloc[0]
-            gain = (winner.baseline_value-winner.value)/max(abs(winner.baseline_value), 1e-12)
-            rows.append(dict(entity=key, candidate=winner.candidate, input=winner.input,
+            winner = best_candidate(rank.to_dict("records"), score="value")
+            gain = (winner["baseline_value"]-winner["value"])/max(abs(winner["baseline_value"]), 1e-12)
+            rows.append(dict(entity=key, candidate=winner["candidate"], input=winner["input"],
                              reference="Winner" if gain >= policy.min_gain else "Baseline",
                              gain=float(gain), evidence_origin=origin,
                              population="seen" if key in training_ids else "zero_shot"))
@@ -350,7 +350,7 @@ class ModelArena:
             raise ValueError("Duplicate observations")
         joined = forecasts.merge(observed[keys+["observed"]], on=keys, validate="m:1")
         error = joined.observed-joined.value
-        joined["pinball"] = np.maximum(joined["quantile"]*error, (joined["quantile"]-1)*error)
+        joined["pinball"] = pinball_error(error, joined["quantile"], maximum=np.maximum)
         return joined.groupby(["entity", "target", "role"]).pinball.mean().reset_index()
 
     def postprocess(self, forecasts, *, context=None, postprocessors=()):
@@ -373,7 +373,15 @@ class ModelArena:
         for folder in curve_paths:
             if folder.exists():
                 shutil.copytree(folder, release / "learning_curves", dirs_exist_ok=True)
-        write_json(release / "spec.json", self.describe())
+        from .presentation import publication_view
+
+        config = self.describe()
+        config["view"] = publication_view(
+            self.spec.schema.target_cols, self.spec.quantiles,
+            labels=self.spec.target_labels, units=self.spec.target_units,
+            metrics=["pinball"], routing=["entity"],
+        )
+        write_json(release / "spec.json", config)
         for processor in postprocessors:
             processor.process(release, forecasts=forecasts, context=context)
         return ArtifactRef(path=str(release), signature=signature(self.describe()))

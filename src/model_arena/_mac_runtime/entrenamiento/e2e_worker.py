@@ -40,7 +40,7 @@ def execute(run,config,stage,device='cuda',resume=True):
  else:
   from observatorio_cuentas.aws import AwsAdapter,AwsSettings
   adapter=AwsAdapter(AwsSettings(**cfg['aws']),run)
-  adapter.preflight();frame=adapter.ingest(cal);adapter.account_plan();axis=adapter.operational_dates(cal)
+  adapter.preflight();frame=adapter.ingest(cal,horizon=cfg['model']['horizon']);adapter.account_plan();axis=adapter.operational_dates(cal)
  cal.take(axis);cal.after(axis[-1],cfg['model']['horizon'])
  if not np.isfinite(frame.select('balance','variation','fx').to_numpy()).all() or frame.filter(pl.col('fx')<=0).height:raise ValueError('Importe, variación o FX inválido')
  frame=frame.sort('account_id','date');(run/'source').mkdir(exist_ok=True)

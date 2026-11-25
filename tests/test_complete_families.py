@@ -31,7 +31,7 @@ def test_calendar_covariates_are_consumed(family):
 
 @pytest.mark.parametrize('family',['nlinear','dlinear','nbeats'])
 def test_linear_family_rejects_calendar(family):
-    with pytest.raises(ValueError,match='X0 only'):
+    with pytest.raises(ValueError,match='history-only'):
         CompleteNetwork(family=family,targets=2,window=6,h=3,historical=1,future=0,parameters=CompleteParameters())
 
 @pytest.mark.train

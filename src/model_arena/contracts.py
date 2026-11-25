@@ -109,6 +109,8 @@ class ArenaSpec(Contract):
     selection: SelectionPolicy = Field(default_factory=SelectionPolicy)
     cv: TemporalCV = Field(default_factory=TemporalCV)
     artifacts: str = "runs"
+    target_labels: dict[str, str] = Field(default_factory=dict)
+    target_units: dict[str, str] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def compatible(self):
@@ -118,6 +120,8 @@ class ArenaSpec(Contract):
             raise ValueError("Quantiles must be unique, increasing and between zero and one")
         if self.quantiles != [0.025, 0.5, 0.975] and any(m.kind in ("tft_compact", "encoder_decoder", "tide", "nhits", "nlinear", "dlinear", "nbeats") for m in self.models):
             raise ValueError("This TFT implementation supports quantiles .025, .5, .975")
+        if (set(self.target_labels) | set(self.target_units)) - set(self.panel_schema.target_cols):
+            raise ValueError("Labels and units must refer to declared targets")
         if self.freq is None and self.calendar is None:
             raise ValueError("Declare a frequency or an authoritative calendar")
         return self

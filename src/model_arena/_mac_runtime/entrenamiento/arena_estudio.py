@@ -16,6 +16,9 @@ from entrenar_curvas import (ROOT, read, write, spec_for, execute, sha, make_fra
 from agentic_forecasting import Series
 from agentic_forecasting.data import weighted_entropy
 from model_arena.winner_selection import assignments
+from model_arena.models.engine import temporal_folds
+from model_arena.input_spec import study_plan
+from model_arena.scoring import pinball_error
 from curvas_modelo import CurveTFT, fit_curves, predict_curves
 from curvas_metricas import REFERENCE
 from curvas_contrato import KIND, RESULT
@@ -38,7 +41,7 @@ def population(run, config, spec):
         if group['date'].to_list() != axis or not np.isfinite(values).all():
             exclusions.append(dict(account_id=aid,taxonomy=tax,reason='EJE_INCOMPLETO_O_NO_FINITO'))
             continue
-        budget = min(10,int(weighted_entropy(values[:initial,0])*10)+1)
+        budget = 1 if config['curvas'].get('policies', {}).get('segmenter') == 'none' else min(10,int(weighted_entropy(values[:initial,0])*10)+1)
         cohort = 'seen' if tax == 'cuentas_entrenamiento' else 'zero_shot'
         item = Series(aid,axis,values,group['currency'][0],budget,cohort)
         (seen if cohort == 'seen' else atypical).append(item)
@@ -74,9 +77,14 @@ def candidate_for(trial, inp, cfg):
 def loss_rows(frame, candidate, inventory):
     error = (pl.col('observed')-pl.col('forecast'))/pl.col('scale')
     tau = pl.col('component').replace_strict({'Q2.5':.025,'Q50':.5,'Q97.5':.975})
-    return (frame.filter(pl.col('method') != REFERENCE)
-        .with_columns(pl.max_horizontal(tau*error,(tau-1)*error).alias('pinball'))
-        .group_by('account_id','currency','target','fold').agg(pl.col('pinball').mean().alias('score'))
+    frame = frame.filter(pl.col('method') != REFERENCE)
+    if getattr(candidate, 'selection_metric', None) == 'scaled_mae':
+        frame = frame.filter(pl.col('component') == 'Q50')
+        loss = error.abs()
+    else:
+        loss = pinball_error(error, tau, maximum=pl.max_horizontal)
+    return (frame.with_columns(loss.alias('score'))
+        .group_by('account_id','currency','target','fold').agg(pl.col('score').mean())
         .join(inventory.select('account_id','budget','cohort'),on='account_id',validate='m:1')
         .with_columns(pl.lit(candidate.id).alias('candidate'),pl.lit(candidate.inputs).alias('input'),
             pl.lit(getattr(candidate,'family','encoder_decoder')).alias('family')))
@@ -113,7 +121,15 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
         model = CurveTFT(spec,candidate,cfg['dropout']).to(device)
         if hasattr(model,'external') and saved.get('upstream_provenance') != model.external.provenance:
             raise ValueError('Cambió la implementación upstream del checkpoint')
-        model.load_state_dict(saved['state_dict'])
+        if cfg.get('calendar_sha256') and (
+            saved.get('calendar_sha256') != calendar.source_sha256
+            or saved.get('candidate', {}).get('input_features') != getattr(candidate, 'input_features', None)
+        ):
+            raise ValueError('Checkpoint incompatible con el esquema de calendario del candidato')
+        state = saved['state_dict']
+        if not hasattr(model, 'external') and state and not next(iter(state)).startswith('network.'):
+            state = {'network.' + key: value for key, value in state.items()}
+        model.load_state_dict(state)
         history = saved.get('training_history')
         if not history:
             raise ValueError('El checkpoint no contiene curvas de pérdida; usa una corrida de esta entrega')
@@ -135,7 +151,7 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
     model = fit_curves(known,end,spec,candidate,device,calendar,cfg,on_epoch=on_epoch,monitor=monitor)
     temp = path.with_suffix('.tmp')
     check_space(root, extra_bytes=sum(v.numel()*v.element_size() for v in model.state_dict().values())*2, stage="checkpoint")
-    torch.save(dict(upstream_provenance=model.external.provenance if hasattr(model,'external') else None,state_dict=model.state_dict(),candidate=vars(candidate),spec=asdict(spec),
+    torch.save(dict(upstream_provenance=model.external.provenance if hasattr(model,'external') else None,state_dict=model.state_dict(),candidate=vars(candidate),spec=asdict(spec),calendar_sha256=calendar.source_sha256,
                     training_history=history,loss_monitor=monitor.selection,end=end,fold=fold,scaling='asinh(history/scale); forecast*scale',version='0.11.0',training_account_ids=[s.id for s in seen]),temp)
     temp.replace(path)
     return model
@@ -173,15 +189,11 @@ def run_study(run, config_path, device, *, stage="all"):
     calendar = read_calendar(ROOT/'data/calendar_authoritative.csv')
     dates = axis+calendar.after(axis[-1],spec.horizon)
     calendar.take(dates)
-    folds = [(f'F{i+1}',len(axis)-(3-i)*spec.horizon) for i in range(3)]
+    folds = temporal_folds(len(axis), window=spec.window, horizon=spec.horizon, count=3, step=spec.horizon)
     cfg=config['curvas'];candidates=[];score_frames=[];trials=[];trial_audit=[]
     (root/'predicciones').mkdir(exist_ok=True)
-    families=cfg.get('families',{'encoder_decoder':cfg['trials']})
-    tasks=[(inp,family,budget) for inp in cfg['inputs'] for family,budget in families.items()
-           if family not in ('nlinear','dlinear','nbeats') or inp=='X0']
-    targets = config['curvas'].get('objectives', [None])
-    tasks = [(inp,family,budget,target) for inp,family,budget in tasks for target in targets]
-    for inp,family,budget,target in tasks:
+    for task in study_plan(cfg, spec.epochs):
+        inp,family,budget,target = (task[k] for k in ('input','family','trials','objective'))
         cfg={**config['curvas'],'family':family,'trials':budget,'target':target}
         study_key=inp if 'families' not in cfg else inp+'_'+family
         if target:study_key += '_'+target
@@ -194,6 +206,10 @@ def run_study(run, config_path, device, *, stage="all"):
         def objective(trial):
             check_space(root, stage=f'trial {inp} {trial.number}')
             candidate=candidate_for(trial,inp,cfg)
+            if 'input_specs' in cfg:
+                candidate.input_features = cfg['input_specs'][inp]
+                candidate.transform = cfg['policies']['transform']
+                candidate.selection_metric = cfg['policies']['selection_metric']
             if 'families' in cfg and family=='encoder_decoder' and 'resume_candidate_id' not in trial.user_attrs:
                 candidate.id=f'{inp}_{family}_T{trial.number:04d}'
             if target:
@@ -265,7 +281,7 @@ def run_study(run, config_path, device, *, stage="all"):
         return root
     records=[];prior=[]
     for fold,end in [*folds,('FUTURO',len(axis))]:
-        chosen=assignments(scores,inventory,candidates,prior)
+        chosen=assignments(scores,inventory,candidates,prior, policy=cfg.get("policies"))
         chosen.write_parquet(root/f'winners_{fold}.parquet')
         pieces=[]
         for candidate in candidates:

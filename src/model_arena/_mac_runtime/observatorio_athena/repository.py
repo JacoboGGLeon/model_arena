@@ -54,7 +54,15 @@ class Repository:
   source_filter = 'source IN ('+literal(source)+",'Regla contable')" if include_rules and source in ('Winner','Baseline') else 'source='+literal(source)
   more=[source_filter]
   if source=='Winner':
-   more.append("(source='Regla contable' OR (account_id,fold) IN (SELECT d.account_id,d.fold FROM "+self.table('daily')+" d JOIN "+self.table('inventory')+" i ON d.account_id=i.account_id AND d.run_id=i.run_id AND d.publication_id=i.publication_id WHERE "+self.where(alias='d')+" AND d.candidate=i.candidate))")
+   winner = ("CASE WHEN substr(i.candidate,1,1)='{' THEN CASE d.target "
+             "WHEN 'saldo' THEN try(json_extract_scalar(i.candidate,'$.saldo')) "
+             "WHEN 'variacion' THEN try(json_extract_scalar(i.candidate,'$.variacion')) END "
+             "ELSE i.candidate END")
+   more.append("(source='Regla contable' OR (account_id,date,fold,target) IN ("
+               "SELECT d.account_id,d.date,d.fold,d.target FROM "+self.table('daily')+
+               " d JOIN "+self.table('inventory')+
+               " i ON d.account_id=i.account_id AND d.run_id=i.run_id AND d.publication_id=i.publication_id WHERE "+
+               self.where(alias='d')+" AND d.candidate="+winner+"))")
   for field,value in [('fold',fold),('account_id',account)]:
    if value:more.append(field+'='+literal(value))
   if target in ('saldo','variacion'):more.append('target='+literal(target))

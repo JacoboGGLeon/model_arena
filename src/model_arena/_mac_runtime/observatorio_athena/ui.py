@@ -1,11 +1,15 @@
 from dataclasses import asdict
 import hashlib,json
+from pathlib import Path
+from tempfile import TemporaryDirectory
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 from .repository import Repository,Filters
+from model_arena.presentation import publication_view, winner_rows
+from .layout_export import write_published_csv
 from .theme import CSS
 from .analysis import comparisons,score
 from .historical_sigma import SIGMA_BANDS
@@ -95,9 +99,19 @@ def render_app(config,athena):
  pub=st.sidebar.selectbox('Corrida publicada',options,index=initial,format_func=lambda p:pubs.loc[pubs.publication_id==p,'run_id'].iloc[0][13:]+' · '+pd.to_datetime(pubs.loc[pubs.publication_id==p,'published_at'].iloc[0],utc=True).tz_convert(config.display_timezone).strftime('%Y-%m-%d %H:%M'))
  selected=pubs[pubs.publication_id==pub].iloc[0]
  repo=Repository(config,selected.run_id,pub,int(selected.shards))
+ @st.cache_data(ttl=300,max_entries=32,show_spinner=False)
+ def read_view(uri,cache_tag,_client):
+  return _client.publication_manifest(uri).get('view')
+ view=publication_view(['saldo','variacion'],[.025,.5,.975],labels={'saldo':'Saldo','variacion':'Variación'},
+                       metrics=['SMAPE','MAE','RMSE','Coverage'],routing=['account_id','target'])
+ try:
+  view=read_view(selected.manifest_uri,tag,athena) or view
+ except Exception:
+  st.sidebar.caption('Se usan las etiquetas MAC de compatibilidad para esta publicación.')
+ targets={item['id']:item for item in view['targets']}
  page=st.sidebar.radio('Monitor',['Historia y budgets','Model Arena','Alertamientos'])
  if st.sidebar.button('Actualizar resultados'):
-  fetch.clear();result_page.clear()
+  fetch.clear();result_page.clear();read_view.clear()
   for k in list(st.session_state):
    if k.startswith('query_'):del st.session_state[k]
   st.rerun()
@@ -124,8 +138,17 @@ def render_app(config,athena):
   engine=st.selectbox('Salida',['engine2','engine3'])
   delivery_fold=st.selectbox('Tramo de la salida',['F1','F2','F3','FUTURO'])
   if st.button('Preparar descarga MAC'):
-   output=data(repo.delivery(engine,delivery_fold))
-   st.download_button('Descargar salida MAC CSV',output.to_csv(index=False),file_name=engine+'_'+delivery_fold+'.csv')
+   try:
+    with st.spinner('Preparando el CSV completo…'), TemporaryDirectory(prefix='mac-export-') as directory:
+     path=Path(directory)/(engine+'_'+delivery_fold+'.csv')
+     with path.open('w',encoding='utf-8',newline='') as stream:
+      count=write_published_csv(athena,repo,engine,delivery_fold,stream)
+     if not count:st.info('Esta salida no tiene filas para el tramo seleccionado.')
+     else:st.caption(f'{count:,} filas disponibles para descargar.')
+     with path.open('rb') as stream:
+      st.download_button('Descargar salida MAC CSV',stream,file_name=path.name,mime='text/csv',on_click='ignore')
+   except Exception as exc:
+    st.error('No se pudo preparar la descarga MAC: '+str(exc))
  st.title(page)
  with st.form('filters_'+page):
   a,b,c=st.columns(3)
@@ -166,55 +189,57 @@ def render_app(config,athena):
   st.caption('Referencia acumulada de valores anteriores; mínimo cinco observaciones y sigma poblacional. Verde ±1σ, amarillo 1–2σ y rojo 2–3σ. Una referencia constante se muestra como no disponible.')
   st.download_button('Descargar historia y z-score de la cuenta',history.to_csv(index=False),file_name='historia_'+account+'.csv')
  elif page=='Model Arena':
-  a,b,c=st.columns(3);target=a.selectbox('Objetivo',['saldo','variacion','Ambos'],format_func=lambda x:{'saldo':'Saldo','variacion':'Variación'}.get(x,x));metric=b.selectbox('Métrica',['SMAPE','MAE','RMSE','Coverage']);fold=c.selectbox('Evaluación',['F1–F3','F1','F2','F3'])
+  a,b,c=st.columns(3)
+  options=list(targets)+(['Ambos'] if len(targets)>1 else [])
+  target=a.selectbox('Objetivo',options,format_func=lambda name:targets.get(name,{}).get('label',name))
+  metric=b.selectbox('Métrica',view['metrics'])
+  fold=c.selectbox('Evaluación',['F1–F3','F1','F2','F3'])
   mode=st.radio('Resultado mostrado',['Mejor por input','Winner operativo'],horizontal=True)
-  if currency=='Todas' and metric in ('MAE','RMSE') and target!='Ambos':st.info('Selecciona una divisa para comparar importes monetarios.');return
-  st.caption('F1–F3 participaron en selección; no son Test independiente. Los filtros no cambian las asignaciones operativas. Ambos usa errores normalizados por la escala histórica para MAE/RMSE y conserva el detalle por objetivo.')
+  st.caption('F1–F3 participaron en selección. Los filtros consultan las asignaciones operativas publicadas.')
   raw=data(repo.metrics(filters,None if fold=='F1–F3' else fold))
   if raw.empty:st.info('No hay métricas evaluadas para esta población. Las asignaciones zero-shot no implican evaluación individual de todos los candidatos.');return
   if currency=='Todas':
    st.info('Cada divisa se mantiene en su propio panel.');panel=st.selectbox('Divisa del panel',sorted(raw.currency.unique()));raw=raw[raw.currency==panel]
   ranking=st.radio('Elegir la configuración por',['Universo filtrado','Cada budget'],horizontal=True) if mode=='Mejor por input' else 'Cada budget'
-  table=comparisons(raw,metric,target,mode,ranking)
-  if table.empty:st.info('Sin comparación pareada disponible.');return
   presentation=st.radio('Vista de resultados',['Gráfico','Tabla'],horizontal=True,key='arena_presentation')
-  tabs=st.tabs(['Baseline','Modelo','Baseline vs Modelo'])
-  for tab,label,column in zip(tabs,['Baseline','Modelo','Baseline vs Modelo'],['baseline_value','value','improvement']):
-   with tab:
-    st.subheader(label+' por budget e input')
-    mat=table.pivot_table(index='budget',columns='input',values=column,aggfunc='mean')
-    fig=go.Figure(go.Heatmap(x=mat.columns,y=mat.index,z=mat.to_numpy(),colorscale='RdBu' if label=='Baseline vs Modelo' else 'Blues',zmid=0 if label=='Baseline vs Modelo' else None,texttemplate='%{z:.3f}',hovertemplate='Input %{x} · Budget %{y}<br>%{z:.4f}<extra></extra>'))
-    fig.update_yaxes(tickmode='array',tickvals=list(range(1,11)),ticktext=[str(x) for x in range(1,11)])
-    if label=='Baseline vs Modelo':
-     st.caption('Cada celda compara el modelo de ese input con su baseline sobre las mismas observaciones. Azul: favorece al modelo; rojo: favorece al baseline; blanco: empate. Diferencia = baseline − modelo para errores. No es porcentaje de mejora. Métrica: '+metric+'. Coverage compara distancia al 95% nominal.')
-     fig.update_traces(colorbar_title='Ventaja del modelo',hovertemplate='Input %{x} · Budget %{y}<br>Ventaja: %{z:.4f}<extra></extra>')
-    else:st.caption('Valor de '+metric+' por budget e input. En errores, menor es mejor; Coverage se evalúa contra 95%.')
-    fig.update_layout(template='plotly_white',height=480,xaxis_title='Input',yaxis_title='Budget')
-    if presentation=='Gráfico':st.plotly_chart(fig,use_container_width=True)
-    cols=['budget','input','candidate','accounts','n',column]+(['baseline_value','value','difference','better'] if label=='Baseline vs Modelo' else [])
-    shown=table.loc[:,list(dict.fromkeys(cols))].copy()
-    if mode=='Winner operativo':shown['candidate']='Ganador asignado por cuenta'
-    if presentation=='Tabla':st.dataframe(shown,hide_index=True,use_container_width=True)
-    if label=='Baseline vs Modelo':st.caption('Positivo favorece a Winner. En Coverage se compara cercanía al 95% nominal; revisa también la amplitud.')
-  if metric=='Coverage' and presentation=='Tabla':st.dataframe(table[['budget','input','baseline_value','value','baseline_width','width']],hide_index=True)
-  with st.expander('Resultados separados de saldo y variación'):
-   for objective in ['saldo','variacion']:
-    detail=score(raw,metric,objective)
-    st.caption(objective.capitalize())
-    if presentation=='Tabla':
-     st.dataframe(detail[['role','candidate','input','budget','currency','accounts','value','width']],hide_index=True,use_container_width=True)
-    else:
-     chosen=comparisons(raw,metric,objective,mode,ranking)
-     panel=go.Figure()
-     for input_name,g in chosen.groupby('input',sort=True):
-      for field,family,dash in [('baseline_value','Baseline','dot'),('value','Modelo','solid')]:
-       ordered=g.sort_values('budget')
-       panel.add_trace(go.Scatter(x=ordered.budget,y=ordered[field],mode='lines+markers',name=str(input_name)+' · '+family,legendgroup=str(input_name),line={'dash':dash}))
-     panel.update_layout(template='plotly_white',height=360,xaxis={'title':'Budget','tickmode':'array','tickvals':list(range(1,11))},yaxis_title=metric,hovermode='x unified')
-     st.plotly_chart(panel,use_container_width=True,key='arena_detail_'+objective)
-  st.download_button('Descargar comparación filtrada',table.to_csv(index=False),file_name='baseline_winner.csv')
+  objectives=list(targets) if target=='Ambos' else [target]
+  panels=st.columns(len(objectives))
+  for objective,panel in zip(objectives,panels):
+   with panel:
+    definition=targets[objective]
+    st.subheader(definition['label'])
+    if definition.get('unit'):st.caption(definition['unit'])
+    table=comparisons(raw,metric,objective,mode,ranking)
+    if table.empty:
+     st.info('Sin comparación pareada disponible para este objetivo.')
+     continue
+    tabs=st.tabs(['Baseline','Modelo','Baseline vs Modelo'])
+    for tab,column in zip(tabs,['baseline_value','value','improvement']):
+     with tab:
+      if presentation=='Gráfico':
+       matrix=table.pivot_table(index='budget',columns='input',values=column,aggfunc='mean')
+       color='RdBu' if column=='improvement' else 'Blues'
+       fig=go.Figure(go.Heatmap(x=matrix.columns,y=matrix.index,z=matrix.to_numpy(),
+                               colorscale=color,zmid=0 if column=='improvement' else None,
+                               texttemplate='%{z:.3f}'))
+       fig.update_layout(template='plotly_white',xaxis_title='Input',yaxis_title='Budget')
+       st.plotly_chart(fig,use_container_width=True,key=f'arena_{objective}_{column}')
+      else:
+       columns=['budget','input','candidate','accounts','n',column]
+       if column=='improvement':columns+=['baseline_value','value','difference','better']
+       st.dataframe(table[columns],hide_index=True,use_container_width=True)
+    st.download_button('Descargar comparación filtrada',table.to_csv(index=False),
+                       file_name=f'baseline_winner_{objective}.csv',key=f'arena_download_{objective}')
   if mode=='Winner operativo' and st.checkbox('Explorar asignaciones operativas por cuenta'):
-   paged(repo.inventory(filters),'routing')
+   accounts=paged(repo.inventory(filters),'routing')
+   if not accounts.empty:
+    account=st.selectbox('Cuenta para ver sus ganadores',accounts.account_id.tolist())
+    row=accounts.loc[accounts.account_id==account].iloc[0]
+    routes=pd.DataFrame(winner_rows(account,row.candidate,row.selection_source,objectives))
+    st.dataframe(routes,hide_index=True,use_container_width=True)
+    if st.checkbox('Ver pronósticos de esta cuenta'):
+     daily=data(repo.daily(account))
+     st.dataframe(daily[daily.target.isin(objectives)],hide_index=True,use_container_width=True)
   st.subheader('Modelo y entrenamiento')
   st.caption('Curvas reales por época: entrenamiento fijo y validación temporal. Total, budget y cuenta usan las evaluaciones registradas; F1–F3 participaron en selección, no son Test independiente.')
   scope=st.radio('Ámbito de las loss',['Total','Budget','Cuenta'],horizontal=True)

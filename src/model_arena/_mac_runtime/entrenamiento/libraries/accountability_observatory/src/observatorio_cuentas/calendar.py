@@ -1,4 +1,4 @@
-"""Exact ADA calendar; preserves every original binary column, no synthetic dates."""
+"""Read the frozen operational calendar and its numeric features."""
 
 import hashlib
 from pathlib import Path
@@ -19,7 +19,5 @@ def read_calendar(path, expected_sha256=None):
     frame = pl.read_parquet(path) if path.suffix == ".parquet" else pl.read_csv(path)
     dates = frame["fecha"].to_list()
     names = [x for x in frame.columns if x != "fecha"]
-    features = frame.select(names).to_numpy()
-    if len(names) != 243 or not np.isin(features, [0, 1]).all():
-        raise ValueError("ADA calendar must retain all 243 original binary features")
+    features = frame.select(names).to_numpy() if names else np.empty((len(dates), 0))
     return CalendarTable(dates, features, names, actual)

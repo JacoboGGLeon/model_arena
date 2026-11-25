@@ -8,6 +8,7 @@ from pydantic import Field
 from ..contracts import Contract
 from ..data import scale_for
 from ..encoders import ContextEncoder
+from .engine import predict_batches, train_quantiles
 from typing import Literal
 
 
@@ -54,9 +55,9 @@ class Encoder(nn.Module):
 
 
 class Network(nn.Module):
-    def __init__(self, targets, h, historical, future, params, window=None):
+    def __init__(self, targets, h, historical, future, params, window=None, *, tft_encoder=Encoder):
         super().__init__()
-        activations = {"ReLU": nn.ReLU, "Mish": nn.Mish, "GELU": nn.GELU, "Tanh": nn.Tanh}
+        activations = {"ReLU": nn.ReLU, "Mish": nn.Mish, "GELU": nn.GELU, "Tanh": nn.Tanh, "ELU": nn.ELU}
         if params.activation not in activations or params.encoder_design not in ("shared", "independent"):
             raise ValueError("Unsupported activation or encoder design")
         if params.encoder_kind == "tft_compact" and params.width % 4:
@@ -67,7 +68,7 @@ class Network(nn.Module):
         count = 1 if params.encoder_design == "shared" else targets
         self.encoder_kind = params.encoder_kind
         self.encoders = nn.ModuleList(
-            Encoder(targets, width, params.depth, params.dropout, act)
+            tft_encoder(targets, width, params.depth, params.dropout, act)
             if params.encoder_kind == "tft_compact" else ContextEncoder(
                 kind=params.encoder_kind, window=window, width=width, depth=params.depth,
                 dropout=params.dropout, activation=act, targets=targets) for _ in range(count))
@@ -190,28 +191,19 @@ class TFTCompact:
         optimizer = torch.optim.AdamW(self.network.parameters(), lr=self.params.lr,
                                       weight_decay=self.params.weight_decay)
         samples = max(train.samples_per_epoch, len(ids))
-        for epoch in range(1, epochs+1):
-            self.network.train()
+        def schedule():
             chosen = np.concatenate((np.arange(len(ids)), rng.integers(len(ids), size=samples-len(ids))))
-            schedule = [(ids[i], int(rng.integers(self.spec.window, end-self.spec.h+1))) for i in chosen]
-            rng.shuffle(schedule)
-            total = np.zeros(len(self.spec.schema.target_cols))
-            for start in range(0, samples, train.batch_size):
-                refs = schedule[start:start+train.batch_size]
-                history, past, future, _, truth = self._batch(data, refs, truth=True)
-                optimizer.zero_grad()
-                error = truth.unsqueeze(-1)-self.network(history, past, future)
-                q = truth.new_tensor(self.spec.quantiles)
-                elements = torch.maximum(q*error, (q-1)*error)
-                loss = elements.mean()
-                if not torch.isfinite(loss):
-                    raise ValueError("Non-finite training loss")
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.network.parameters(), 1.)
-                optimizer.step()
-                total += elements.detach().double().mean(dim=(0, 1, 3)).cpu().numpy()*len(refs)
+            refs = [(ids[i], int(rng.integers(self.spec.window, end-self.spec.h+1))) for i in chosen]
+            rng.shuffle(refs)
+            return refs
+
+        def batch(refs):
+            history, past, future, _, truth = self._batch(data, refs, truth=True)
+            return (history, past, future), truth
+
+        def record(epoch, _, averages):
             rows = []
-            for target, value in zip(self.spec.schema.target_cols, total/samples):
+            for target, value in zip(self.spec.schema.target_cols, averages):
                 rows.append(dict(epoch=epoch, target=target, split="train_sampled", value=float(value),
                                  scope="total", entity=None, n_observations=samples*self.spec.h*3))
             for split, refs in [("train_fixed", fixed), ("validation", validation)]:
@@ -220,25 +212,18 @@ class TFTCompact:
                         rows.append(dict(epoch=epoch, target=target, split=split, value=float(value),
                                          scope="entity", entity=entity, n_observations=self.spec.h*3))
             on_epoch(rows)
+
+        train_quantiles(self.network, optimizer, schedule, epochs=epochs, batch_size=train.batch_size,
+                        quantiles=self.spec.quantiles, batch=batch, on_epoch=record)
         self.monitor = {"train_fixed": fixed, "validation": validation}
         return self
 
     def predict(self, data, *, origins, future=None):
-        previous = self.network.training
-        self.network.eval()
-        output = []
-        try:
-            with torch.inference_mode():
-                for start in range(0, len(origins), self.spec.training.batch_size):
-                    history, past, futr, scales, _ = self._batch(
-                        data, origins[start:start+self.spec.training.batch_size], future=future)
-                    result = self.network(history, past, futr).cpu().numpy().astype(np.float64)
-                    output.extend(result * scales[:, None, :, None])
-        finally:
-            self.network.train(previous)
-        result = np.stack(output)
-        if not np.isfinite(result).all():
-            raise ValueError("Non-finite predictions")
+        def batch(refs):
+            history, past, futr, scales, _ = self._batch(data, refs, future=future)
+            return (history, past, futr), scales[:, None, :, None], None
+
+        result, _ = predict_batches(self.network, origins, batch_size=self.spec.training.batch_size, batch=batch)
         return result
 
     def save(self, path):

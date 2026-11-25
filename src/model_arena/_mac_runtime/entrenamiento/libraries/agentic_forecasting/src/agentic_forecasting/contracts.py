@@ -88,11 +88,12 @@ class ExperimentSpec:
         return self.window+self.horizon+self.cv_folds*self.validation+self.evaluation_span
 
     def __post_init__(self):
+        if self.calendar_features < 0:
+            raise ValueError("Calendar feature count cannot be negative")
         if self.backtest_cuts<1 or self.backtest_stride<1:
             raise ValueError("Positive backtest sizes required")
         if (
             min(
-                self.calendar_features,
                 self.cpu_threads,
                 self.window,
                 self.horizon,

@@ -1,7 +1,7 @@
 """Calendar table adapter; accepts files or validated artifact-like providers.
 
 The forecasting core has no dependency on a particular calendar rule engine.
-MAC's fixed-feature contract is checked only at its integration boundary.
+Snapshots preserve the exact feature schema at the integration boundary.
 """
 
 from dataclasses import dataclass
@@ -31,6 +31,9 @@ def to_features(calendar, *, date_col=None, time_col="ds", columns=None):
     names = list(columns) if columns is not None else [c for c in frame if c != date_col]
     if len(names) != len(set(names)) or date_col in names or time_col in names:
         raise ValueError("Calendar column selection/name collision")
+    missing = set(names) - set(frame)
+    if missing:
+        raise ValueError(f"Calendar columns missing: {sorted(missing)}")
     out = frame[[date_col, *names]].copy()
     dates = pd.to_datetime(out[date_col], errors="raise")
     if dates.isna().any() or dates.dt.tz is not None or not dates.eq(dates.dt.normalize()).all():
@@ -65,7 +68,7 @@ class CalendarSnapshot:
         return folder / "provenance.json"
 
 
-def prepare_snapshot(*, calendar=None, calendar_path=None, n_features=243):
+def prepare_snapshot(*, calendar=None, calendar_path=None, n_features=None):
     if (calendar is None) == (calendar_path is None):
         raise ValueError("Pass exactly one of calendar or calendar_path")
     raw_csv = None
@@ -113,13 +116,11 @@ def prepare_snapshot(*, calendar=None, calendar_path=None, n_features=243):
     if frame.empty or not frame.columns.is_unique or frame.columns[0] != "fecha":
         raise ValueError("MAC calendar must start with a unique fecha column")
     names = [c for c in frame if c != "fecha"]
-    if len(names) != n_features:
+    if n_features is not None and len(names) != n_features:
         raise ValueError(
             f'MAC expects {n_features} features, received {len(names)}. For Calendar Studio pass .view("mac_legacy_v1") explicitly.'
         )
     aligned = to_features(frame, date_col="fecha", time_col="fecha")
-    if not aligned[names].isin([0, 1]).all().all():
-        raise ValueError("MAC calendar features must be binary")
     if aligned.empty:
         raise ValueError("MAC calendar is empty")
     frame = aligned.copy()
@@ -140,6 +141,7 @@ def prepare_snapshot(*, calendar=None, calendar_path=None, n_features=243):
         rows=len(frame),
         feature_count=len(names),
         features=names,
+        feature_types={name: str(frame[name].dtype) for name in names},
         calendar_sha256=hashlib.sha256(canonical).hexdigest(),
         source_metadata=metadata,
     )

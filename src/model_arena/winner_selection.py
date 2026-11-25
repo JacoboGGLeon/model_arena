@@ -1,18 +1,20 @@
 """Budget finalists and chronological series assignment using seen evidence."""
 import polars as pl
 
+from .scoring import best_candidate
 
-def assignments(scores, inventory, candidates, prior_folds):
+
+def assignments(scores, inventory, candidates, prior_folds, *, policy=None):
     if candidates and getattr(candidates[0], 'target', None):
         parts=[]
-        for target in ('saldo','variacion'):
+        for target in dict.fromkeys(c.target for c in candidates):
             pool=[c for c in candidates if c.target==target]
             if not pool:
                 raise ValueError('Missing candidates for '+target)
             # Recursive legacy selector on exactly one objective, preserving fallback policy.
             from types import SimpleNamespace
             plain=[SimpleNamespace(**{k:v for k,v in vars(c).items() if k!='target'}) for c in pool]
-            part=assignments(scores.filter(pl.col('target')==target),inventory,plain,prior_folds)
+            part=assignments(scores.filter(pl.col('target')==target),inventory,plain,prior_folds,policy=policy)
             parts.append(part.with_columns(pl.lit(target).alias('target')))
         return pl.concat(parts)
     eligible = scores.filter(pl.col('fold').is_in(prior_folds))
@@ -33,14 +35,17 @@ def assignments(scores, inventory, candidates, prior_folds):
         if own.height:
             segment, source = own, 'SERIE'
         else:
-            segment=pool.filter((pl.col('currency')==row['currency']) & (pl.col('budget')==row['budget']))
-            source='DIVISA_BUDGET'
-            if segment.is_empty():
-                segment=pool.filter(pl.col('budget')==row['budget'])
-                source='BUDGET'
-            if segment.is_empty():
-                segment=pool
-                source='GLOBAL'
-        choice=segment.group_by('candidate').agg(pl.col('score').mean()).sort('score','candidate')['candidate'][0]
+            criteria = {
+                'currency_budget': ((pl.col('currency') == row['currency']) & (pl.col('budget') == row['budget']), 'DIVISA_BUDGET'),
+                'budget': (pl.col('budget') == row['budget'], 'BUDGET'),
+                'global': (pl.lit(True), 'GLOBAL'),
+            }
+            for key in (policy or {}).get('fallback', ['currency_budget', 'budget', 'global']):
+                predicate, source = criteria[key]
+                segment = pool.filter(predicate)
+                if not segment.is_empty():
+                    break
+        rank = segment.group_by('candidate').agg(pl.col('score').mean())
+        choice = best_candidate(rank.iter_rows(named=True), score='score')['candidate']
         result.append(dict(**row,candidate=choice,selection_source=source))
     return pl.DataFrame(result)

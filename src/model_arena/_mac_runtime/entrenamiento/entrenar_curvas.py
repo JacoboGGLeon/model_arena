@@ -39,7 +39,7 @@ def write(path, value):
 def spec_for(config):
     return ExperimentSpec(
         **config['model'],
-        inputs=tuple(config['curvas']['inputs']),
+        inputs=('X0',) if 'input_specs' in config['curvas'] else tuple(config['curvas']['inputs']),
         encoder_designs=tuple(config['curvas'].get('encoders',['independent'])),
         architectures=('tft_compact',), decoders=('direct',),
         approaches=('mixed',), cv_folds=3, test=config['model']['horizon'],

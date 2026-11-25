@@ -3,9 +3,10 @@
 import numpy as np
 import torch
 from torch import nn
-from torch.nn import functional as F
+from types import SimpleNamespace
 
-from agentic_forecasting.encoder_backends import ContextEncoder
+from model_arena.models.engine import predict_batches, train_quantiles
+from model_arena.models.tft import Network, TFTParameters
 from agentic_forecasting.data import batch
 from agentic_forecasting.backbones import TFTTemporalBackbone
 
@@ -19,83 +20,76 @@ def persistence(history, horizon):
     return np.repeat(values[:, None], horizon, axis=1)
 
 
+def legacy_tft_encoder(targets, width, depth, dropout, activation):
+    """Preserve MAC's seeded initialization sequence."""
+    encoder = TFTTemporalBackbone(width, dropout)
+    encoder.input = nn.Linear(targets, width)
+    encoder.encoder = nn.LSTM(width, width, depth, batch_first=True)
+    for block in (encoder.history_grn, encoder.state_grn, encoder.query_grn, encoder.output_grn):
+        block.activation = activation()
+    return encoder
+
+
 class CurveTFT(nn.Module):
     def __init__(self, spec, candidate, dropout):
         super().__init__()
         self.target_names = (candidate.target,) if getattr(candidate, "target", None) else TARGETS
         targets = len(self.target_names)
-        if getattr(candidate, 'family', 'encoder_decoder') != 'encoder_decoder':
-            from agentic_forecasting.complete_network import CompleteNetwork, CompleteParameters
-            self.external = CompleteNetwork(family=candidate.family,targets=targets,window=spec.window,
-                h=spec.horizon,historical=spec.calendar_features if candidate.inputs in ('X1','X3') else 0,
-                future=spec.calendar_features if candidate.inputs in ('X2','X3') else 0,
-                parameters=CompleteParameters.model_validate(candidate.family_params))
-            return
-        width = candidate.width
-        activation = getattr(candidate, "activation", "ELU")
-        activations = {"ReLU": nn.ReLU, "Mish": nn.Mish, "GELU": nn.GELU, "Tanh": nn.Tanh, "ELU": nn.ELU}
-        self.input_kind = candidate.inputs
-        calendar_size = spec.calendar_features
-        self.past_calendar = nn.Linear(calendar_size, width) if candidate.inputs in ("X1", "X3") else None
-        self.future_calendar = nn.Linear(calendar_size, width) if candidate.inputs in ("X2", "X3") else None
-        self.encoder_kind = getattr(candidate, "encoder_kind", "tft_compact")
-        self.encoders = nn.ModuleList()
-        for _ in range(1 if candidate.encoder_design == "shared" else targets):
-            if self.encoder_kind != "tft_compact":
-                self.encoders.append(ContextEncoder(kind=self.encoder_kind, window=spec.window,
-                    width=width, depth=candidate.depth, dropout=dropout, activation=activations[activation], targets=targets))
-                continue
-            encoder = TFTTemporalBackbone(width, dropout)
-            encoder.input = nn.Linear(targets, width)
-            encoder.encoder = nn.LSTM(width, width, candidate.depth, batch_first=True)
-            for block in (encoder.history_grn, encoder.state_grn, encoder.query_grn, encoder.output_grn):
-                block.activation = activations[activation]()
-            self.encoders.append(encoder)
-        self.positions = nn.ModuleList(nn.Embedding(spec.horizon, width) for _ in self.encoders)
-        heads = []
-        for _ in self.target_names:
-            layers = []
-            for _ in range(getattr(candidate, "decoder_depth", 1)):
-                layers.extend([nn.Linear(width, width), activations[activation](), nn.Dropout(dropout)])
-            heads.append(nn.Sequential(*layers, nn.Linear(width, 3)))
-        self.quantiles = nn.ModuleList(heads)
+        declared = getattr(candidate, "input_features", None)
+        past = len(declared["historical"]) if declared is not None else (
+            spec.calendar_features if candidate.inputs in ("X1", "X3") else 0
+        )
+        future = len(declared["future"]) if declared is not None else (
+            spec.calendar_features if candidate.inputs in ("X2", "X3") else 0
+        )
+        if getattr(candidate, "family", "encoder_decoder") != "encoder_decoder":
+            from model_arena.models.complete import CompleteNetwork, CompleteParameters
+
+            self.external = CompleteNetwork(
+                family=candidate.family, targets=targets, window=spec.window,
+                h=spec.horizon, historical=past, future=future,
+                parameters=CompleteParameters.model_validate(candidate.family_params),
+            )
+        else:
+            params = TFTParameters(
+                encoder_kind=getattr(candidate, "encoder_kind", "tft_compact"),
+                encoder_design="independent" if candidate.encoder_design == "independent" else "shared",
+                depth=candidate.depth, decoder_depth=getattr(candidate, "decoder_depth", 1),
+                width=candidate.width, activation=getattr(candidate, "activation", "ELU"),
+                dropout=dropout,
+            )
+            self.network = Network(targets, spec.horizon, past, future, params, window=spec.window,
+                                   tft_encoder=legacy_tft_encoder)
+
+    @property
+    def encoders(self):
+        return self.network.encoders
+
+    @property
+    def quantiles(self):
+        return self.network.quantiles
 
     def forward(self, features):
-        if hasattr(self, 'external'):
-            return self.external(features['history_y'],features.get('history_calendar'),features.get('future_calendar'))
-        history = features["history_y"]
-        representations = []
-        for enc, pos in zip(self.encoders, self.positions):
-            projected = enc.input(history)
-            if self.input_kind in ("X1", "X3"):
-                projected = projected + self.past_calendar(features["history_calendar"])
-            if self.encoder_kind != "tft_compact":
-                queries = pos.weight.expand(len(history), -1, -1)
-                if self.input_kind in ("X2", "X3"):
-                    queries = queries + self.future_calendar(features["future_calendar"])
-                representations.append(enc(projected, queries))
-                continue
-            encoded, (hidden, _) = enc.encoder(projected)
-            encoded = enc.history_grn(encoded)
-            state = enc.state_grn(hidden[-1])
-            queries = pos.weight.expand(len(history), -1, -1)
-            if self.input_kind in ("X2", "X3"):
-                queries = queries + self.future_calendar(features["future_calendar"])
-            queries = enc.query_grn(queries + state[:, None, :])
-            attended, _ = enc.attention(queries, encoded, encoded, need_weights=False)
-            value, control = enc.attention_gate(attended).chunk(2, dim=-1)
-            representations.append(enc.output_grn(enc.attention_norm(queries + value * control.sigmoid())))
-        outputs = []
-        for i, rep in enumerate([representations[min(i, len(representations)-1)] for i in range(len(self.target_names))]):
-            mid, lower, upper = self.quantiles[i](rep).split(1, dim=-1)
-            outputs.append(torch.cat((mid-F.softplus(lower), mid,
-                                      mid+F.softplus(upper)), dim=-1))
-        return torch.stack(outputs, dim=2)
+        model = self.external if hasattr(self, "external") else self.network
+        return model(features["history_y"], features.get("history_calendar"), features.get("future_calendar"))
 
 
 def make_batch(series, refs, spec, candidate, device, calendar, observed):
-    features = batch(series, refs, spec, candidate, device, {}, observed=False,
+    declared = getattr(candidate, "input_features", None)
+    if declared is None:
+        batch_candidate = candidate
+    else:
+        legacy_input = {(False, False): "X0", (True, False): "X1",
+                        (False, True): "X2", (True, True): "X3"}
+        batch_candidate = SimpleNamespace(inputs=legacy_input[bool(declared["historical"]), bool(declared["future"])])
+    features = batch(series, refs, spec, batch_candidate, device, {}, observed=False,
                      calendar_table=calendar)
+    if declared is not None:
+        for key, period in (("history_calendar", "historical"), ("future_calendar", "future")):
+            if declared[period]:
+                features[key] = features[key][..., [calendar.names.index(name) for name in declared[period]]]
+    if getattr(candidate, "transform", None) == "linear_history" and getattr(candidate, "family", "encoder_decoder") == "encoder_decoder":
+        features["history_y"] = features["history_y"].sinh()
     for key in ("history_calendar", "future_calendar"):
         if key in features:
             features[key] = torch.as_tensor(features[key], dtype=torch.float32, device=device)
@@ -127,49 +121,35 @@ def fit_curves(series, end, spec, candidate, device, calendar, config, on_epoch=
     if first_origin > last_origin:
         raise ValueError("Historia insuficiente")
     samples = max(spec.samples_per_epoch, len(series))
-    for epoch in range(spec.epochs):
+    def schedule():
         accounts = np.concatenate((np.arange(len(series)), rng.integers(len(series), size=samples-len(series))))
-        schedule = np.column_stack((accounts, rng.integers(first_origin, last_origin+1, size=samples)))
-        rng.shuffle(schedule)
-        loss_total = 0.
-        loss_by_target = np.zeros(len(model.target_names))
-        for first in range(0, samples, spec.batch_size):
-            features, _, truth = make_batch(
-                series, schedule[first:first+spec.batch_size], spec, candidate, device, calendar, True
-            )
-            optimizer.zero_grad()
-            prediction = model(features)
-            residual = truth.unsqueeze(-1) - prediction
-            probs = prediction.new_tensor(CURVE_PROBS)
-            elements = torch.maximum(probs*residual, (probs-1)*residual)
-            loss = elements.mean()
-            loss_by_target += elements.detach().mean(dim=(0,1,3)).cpu().numpy() * len(truth)
-            if not torch.isfinite(loss):
-                raise ValueError('Pérdida de entrenamiento no finita')
-            loss.backward()
-            nn.utils.clip_grad_norm_(model.parameters(), 1.)
-            optimizer.step()
-            loss_total += loss.detach().item() * len(truth)
-        epoch_loss = loss_total/samples
+        refs = np.column_stack((accounts, rng.integers(first_origin, last_origin+1, size=samples)))
+        rng.shuffle(refs)
+        return refs
+
+    def batch_training(refs):
+        features, _, truth = make_batch(series, refs, spec, candidate, device, calendar, True)
+        return (features,), truth
+
+    def record(epoch, loss, averages):
         if on_epoch is not None:
-            record=dict(epoch=epoch+1, train_loss=epoch_loss, validation_loss=None, **{f"train_loss_{target}": float(loss_by_target[i]/samples) if target in model.target_names else None for target in TARGETS for i in [model.target_names.index(target) if target in model.target_names else 0]})
-            if monitor is not None:record.update(monitor(model))
-            on_epoch(record)
-        print(f'Época {epoch+1}/{spec.epochs} · pérdida {epoch_loss:.6g}', flush=True)
+            by_target = dict(zip(model.target_names, map(float, averages)))
+            row = dict(epoch=epoch, train_loss=loss, validation_loss=None,
+                       **{f"train_loss_{target}": by_target.get(target) for target in TARGETS})
+            if monitor is not None:
+                row.update(monitor(model))
+            on_epoch(row)
+        print(f'Época {epoch}/{spec.epochs} · pérdida {loss:.6g}', flush=True)
+
+    train_quantiles(model, optimizer, schedule, epochs=spec.epochs, batch_size=spec.batch_size,
+                    quantiles=CURVE_PROBS, batch=batch_training, on_epoch=record, accumulate_double=False)
     return model
 
 
 def predict_curves(model, series, end, spec, candidate, device, calendar):
-    predicted, reference = [], []
-    model.eval()
-    with torch.inference_mode():
-        for first in range(0, len(series), spec.batch_size):
-            refs = [(i, end) for i in range(first, min(len(series), first+spec.batch_size))]
-            features, native, _ = make_batch(series, refs, spec, candidate, device, calendar, False)
-            result = model(features).cpu().numpy().astype(np.float64)
-            result *= features['scales'].cpu().numpy()[:, None, :, None]
-            if not np.isfinite(result).all():
-                raise ValueError('Pronóstico no finito')
-            predicted.append(result)
-            reference.append(native)
-    return np.concatenate(predicted), np.concatenate(reference)
+    def batch_prediction(refs):
+        features, native, _ = make_batch(series, refs, spec, candidate, device, calendar, False)
+        return (features,), features["scales"].cpu().numpy()[:, None, :, None], native
+
+    return predict_batches(model, [(i, end) for i in range(len(series))],
+                           batch_size=spec.batch_size, batch=batch_prediction)

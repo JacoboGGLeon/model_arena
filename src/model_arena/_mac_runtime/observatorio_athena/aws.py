@@ -20,6 +20,15 @@ class Athena:
    session=session or boto3.Session(region_name=config.region)
    client=session.client('athena')
   self.client=client
+ def publication_manifest(self,uri):
+  bucket,key=split_s3(uri)
+  expected_bucket,prefix=split_s3(self.config.s3_base)
+  if bucket!=expected_bucket or not key.startswith(prefix+'/control/manifests/'):
+   raise ValueError('Manifiesto fuera de la publicación configurada')
+  import boto3
+  s3=boto3.Session(region_name=self.config.region).client('s3')
+  response=s3.get_object(Bucket=bucket,Key=key)
+  with response['Body'] as body:return json.load(body)
  def execute(self,sql):
   qid=self.client.start_query_execution(QueryString=sql,QueryExecutionContext={'Catalog':self.config.catalog,'Database':self.config.database},WorkGroup=self.config.workgroup,ResultConfiguration={'OutputLocation':self.config.query_output})['QueryExecutionId']
   end=time.monotonic()+self.config.query_timeout
@@ -31,13 +40,28 @@ class Athena:
     self.client.stop_query_execution(QueryExecutionId=qid)
     raise TimeoutError('Consulta cancelada por timeout: '+qid)
    time.sleep(.4)
- def page(self,handle,token=None,size=None):
+ def _result_page(self,handle,token=None,size=None):
   args=dict(QueryExecutionId=handle['query_id'],MaxResults=min(1000,size or self.config.page_size))
   if token:args['NextToken']=token
   response=self.client.get_query_results(**args);result=response['ResultSet']
   columns=result.get('ResultSetMetadata',{}).get('ColumnInfo',[])
-  names=[c['Name'] for c in columns];rows=result.get('Rows',[])
+  rows=result.get('Rows',[])
   if not token and rows:rows=rows[1:]
+  records=[
+   [row['Data'][i].get('VarCharValue') if i<len(row['Data']) else None for i in range(len(columns))]
+   for row in rows
+  ]
+  return columns,records,response.get('NextToken')
+ def raw_pages(self,sql,*,size=None):
+  """Iterate raw result pages with a single query execution."""
+  handle=self.execute(sql);token=None
+  while True:
+   columns,records,token=self._result_page(handle,token,size)
+   yield [column['Name'] for column in columns],records
+   if not token:break
+ def page(self,handle,token=None,size=None):
+  columns,rows,next_token=self._result_page(handle,token,size)
+  names=[c['Name'] for c in columns]
   def convert(value,type_):
    if value is None:return None
    if type_ in ('bigint','integer','int','smallint','tinyint'):return int(value)
@@ -46,10 +70,8 @@ class Athena:
    if type_.startswith('decimal'):return Decimal(value)
    if type_=='date':return date.fromisoformat(value)
    return value
-  records=[]
-  for row in rows:
-   cells=row['Data'];records.append({c['Name']:convert(cells[i].get('VarCharValue') if i<len(cells) else None,c['Type']) for i,c in enumerate(columns)})
-  return pd.DataFrame(records,columns=names),response.get('NextToken')
+  records=[[convert(value,column['Type']) for value,column in zip(row,columns)] for row in rows]
+  return pd.DataFrame(records,columns=names),next_token
  def all(self,sql,max_rows=100000):
   handle=self.execute(sql);frames=[];token=None;count=0
   while True:

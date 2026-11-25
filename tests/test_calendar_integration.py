@@ -11,7 +11,7 @@ def test_artifact_projection_and_freeze(tmp_path):
         start="2026-01-01", end="2026-12-31", holidays=example_holidays()
     )
     with pytest.raises(ValueError, match="243"):
-        prepare_snapshot(calendar=source)
+        prepare_snapshot(calendar=source, n_features=243)
     view = source.view("mac_legacy_v1")
     snapshot = prepare_snapshot(calendar=view)
     assert "2026-11-02" not in snapshot.frame.fecha.tolist()
@@ -66,8 +66,8 @@ def test_csv_bytes_remain_identical(tmp_path):
 
 def test_invalid_mac_tables():
     f = pd.DataFrame({"fecha": ["2026-01-01"], **{f"f{i}": [0] for i in range(243)}})
-    f.loc[0, "f0"] = 2
-    with pytest.raises(ValueError, match="binary"):
+    f["f0"] = float("inf")
+    with pytest.raises(ValueError, match="finite"):
         prepare_snapshot(calendar=f)
     with pytest.raises(ValueError):
         prepare_snapshot(calendar=pd.DataFrame())
@@ -80,16 +80,30 @@ def test_mac_runtime_rejects_wrong_feature_configuration_before_creating_project
         "requested_accounts": 0,
         "aws": {"account_limit": 0},
         "model": {"calendar_features": 244},
-        "curvas": {},
+        "curvas": {"inputs": ["X0"], "trials": 1},
     }
     path = tmp_path / "training.json"
     path.write_text(json.dumps(training))
-    with pytest.raises(ValueError, match="243"):
+    with pytest.raises(ValueError, match="244"):
         MacProject.create(
             tmp_path / "project",
             training_config=path,
             publication_config=tmp_path / "unused.json",
-            calendar=pd.DataFrame(),
+            calendar=pd.DataFrame({"fecha": ["2026-01-01"], **{f"f{i}": [0] for i in range(243)}}),
             device="cpu",
         )
     assert not (tmp_path / "project").exists()
+
+
+def test_unknown_and_unsupported_features_are_rejected_before_training():
+    from model_arena.input_spec import resolve_inputs, study_plan
+
+    with pytest.raises(ValueError, match="desconocida"):
+        resolve_inputs(["futuro"], {"futuro": {"historical": [], "future": ["desconocida"]}}, ["feriado"])
+
+    definitions = resolve_inputs(
+        ["futuro"], {"futuro": {"historical": [], "future": ["feriado"]}}, ["feriado"]
+    )
+    with pytest.raises(ValueError, match="future"):
+        study_plan(dict(inputs=["futuro"], input_specs=definitions, trials=1, families={"dlinear": 1},
+                        family_inputs={"dlinear": ["futuro"]}), epochs=2)

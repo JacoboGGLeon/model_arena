@@ -37,16 +37,14 @@ class MacProject:
         training = read_json(training_config)
         if training.get("requested_accounts") != 0 or training.get("aws", {}).get("account_limit") != 0:
             raise ValueError("The profile requires the complete eligible universe, account limits = 0")
-        if training["model"]["calendar_features"] != 243:
-            raise ValueError("The MAC compatibility runtime requires exactly 243 calendar features")
         objectives = training['curvas'].get('objectives', ['saldo','variacion'])
         if objectives != ['saldo','variacion']:
             raise ValueError('Declare objectives=[saldo, variacion] for independent MAC studies')
         training['curvas']['objectives'] = objectives
         training['curvas'].pop('encoders', None)
         training['curvas']['selection_scope'] = 'entity_target'
-        training["curvas"]["final_epochs"] = 75
-        training["curvas"]["loss_monitor_accounts"] = None
+        training["curvas"].setdefault("final_epochs", 75)
+        training["curvas"].setdefault("loss_monitor_accounts", None)
         from ..contracts import PruningSpec
 
         PruningSpec.model_validate(training["curvas"].get("pruner") or {})
@@ -63,8 +61,19 @@ class MacProject:
         from ..calendar import prepare_snapshot
 
         snapshot = prepare_snapshot(
-            calendar=calendar, calendar_path=calendar_path, n_features=training["model"]["calendar_features"]
+            calendar=calendar, calendar_path=calendar_path, n_features=training["model"].get("calendar_features")
         )
+        from ..input_spec import resolve_inputs, study_plan
+        from ..mac_policy import MacPolicy
+
+        curves = training["curvas"]
+        training["model"]["calendar_features"] = snapshot.provenance["feature_count"]
+        curves["input_specs"] = resolve_inputs(curves["inputs"], curves.get("input_specs"), snapshot.provenance["features"])
+        curves["calendar_sha256"] = snapshot.provenance["calendar_sha256"]
+        if type(curves["final_epochs"]) is not int or curves["final_epochs"] < 1:
+            raise ValueError("final_epochs debe ser un entero positivo")
+        curves["policies"] = MacPolicy.model_validate(curves.get("policies", {})).model_dump(mode="json")
+        study_plan(curves, training["model"]["epochs"])
         check_space(path, stage="crear proyecto")
         path.mkdir(parents=True)
         source = Path(str(files("model_arena") / "_mac_runtime"))
@@ -132,6 +141,19 @@ class MacProject:
             )
         return self
 
+    def plan(self):
+        """Describe the frozen study budget before training."""
+        from ..input_spec import study_plan
+
+        training = read_json(self.path / "training.json")
+        studies = study_plan(training["curvas"], training["model"]["epochs"])
+        return dict(
+            studies=studies,
+            candidate_configurations=sum(item["trials"] for item in studies),
+            hpo_fits=sum(item["trials"] * item["folds"] for item in studies),
+            final_epochs=training["curvas"].get("final_epochs", 75),
+        )
+
     def prepare(self):
         return self._stage("prepare")
 
@@ -151,6 +173,18 @@ class MacProject:
     def postprocess(self):
         self._stage("postprocess")
         return self.path / "release"
+
+    def export_layout(self, destination, *, engine, fold):
+        """Export a prepared Engine 2 or 3 segment as CSV or typed Parquet."""
+        from .._mac_runtime.observatorio_athena.layout_export import export_prepared_layout, layout_schema
+
+        layout_schema(engine, fold)
+        if Path(destination).suffix.lower() not in (".csv", ".parquet"):
+            raise ValueError("El destino debe terminar en .csv o .parquet")
+        release = self.path / "release"
+        if not (release / "publication.json").is_file():
+            self.postprocess()
+        return export_prepared_layout(release, destination, engine=engine, fold=fold)
 
     def publish(self):
         self._stage("publish")
@@ -182,20 +216,13 @@ class MacProject:
 
     def observe(self, *, publication_id=None):
         self.verify()
-        cfg = read_json(self.path / "publication.json")
         if publication_id is None and (self.path / "release/published.json").exists():
             publication_id = read_json(self.path / "release/published.json")["publication_id"]
-        if publication_id:
-            cfg["initial_publication_id"] = publication_id
-        write_json(self.path / "monitor.json", cfg)
-        # Existing dashboard and launcher are preserved; interpreter is explicit.
-        import importlib.util
-
-        runtime = self.path / "runtime"
-        spec = importlib.util.spec_from_file_location("_mac_profile_monitor", runtime / "abrir_monitor.py")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.launch(config=self.path / "monitor.json", python=sys.executable)
+        return open_monitor(
+            self.path / "publication.json",
+            publication_id=publication_id,
+            workspace=self.path / ".observatory",
+        )
 
 
 def open_monitor(publication_config, *, publication_id=None, workspace=".observatory"):

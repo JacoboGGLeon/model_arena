@@ -8,6 +8,7 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 from model_arena.disk import check_space
+from model_arena.presentation import publication_view
 from model_arena.loss_store import detail_files,read_batches
 from .common import sha,source_signature,shard
 from .schemas import SCHEMAS,ENGINE2_COLUMNS,athena_type
@@ -314,6 +315,12 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
   calendar_provenance=calendar_provenance,
   datasets={name:dict(columns=[dict(name=f.name,type=athena_type(f.type)) for f in sc],rows=sum(x['rows'] for x in writer.entries if x['dataset']==name)) for name,sc in SCHEMAS.items() if name!='publications'},
   protocol='F1–F3 usados en selección; no Test independiente. Layout Engine2 preservado, selección MAC3 explícita. Engine3 port literal MAC2 separado de diagnóstico MAC3.',
+  policies=report.get('config',{}).get('curvas',{}).get('policies',{}),
+  view=publication_view(
+   report.get('config',{}).get('curvas',{}).get('objectives',['saldo','variacion']),
+   [.025,.5,.975],labels={'saldo':'Saldo','variacion':'Variación'},
+   units={'saldo':'Moneda nativa','variacion':'Moneda nativa'},
+   metrics=['SMAPE','MAE','RMSE','Coverage'],routing=['account_id','target']),
   population_hashes=population_hashes,engine3_reference_sha256=REFERENCE_SHA256,training_available=bool(training_path),delivery_load_date=str(load_date),created_at=datetime.now(timezone.utc).isoformat())
  manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
  for name in ['_context.parquet','_sorted_source.parquet']:(out/name).unlink(missing_ok=True)

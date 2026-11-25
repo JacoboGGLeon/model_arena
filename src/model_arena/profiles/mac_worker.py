@@ -47,7 +47,8 @@ def execute(project, stage):
         catalog = {item.id: item for item in candidates}
         if stage == "select":
             chosen = assignments(
-                pl.read_parquet(root / "scores.parquet"), inventory, candidates, ["F1", "F2", "F3"]
+                pl.read_parquet(root / "scores.parquet"), inventory, candidates, ["F1", "F2", "F3"],
+                policy=cfg["curvas"].get("policies")
             )
             write_parquet(chosen, root / "winners_FUTURO.parquet")
         elif stage in ("fit", "predict", "postprocess"):

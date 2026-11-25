@@ -306,7 +306,7 @@ class AwsAdapter:
         self._save("schema.json", receipt)
         return receipt
 
-    def resolve(self, calendar_table):
+    def resolve(self, calendar_table, *, horizon=20):
         s = self.settings
         pin = (
             s.metadata_load_date
@@ -330,7 +330,7 @@ class AwsAdapter:
             raise ValueError(
                 "Source bounds are outside the authoritative calendar; update the calendar explicitly"
             )
-        calendar_table.after(cutoff, 20)
+        calendar_table.after(cutoff, horizon)
         self.pin = pin
         self.bounds = {"first_date": first, "cutoff": cutoff, "snapshot_load_date": pin}
         self._save("bounds.json", self.bounds)
@@ -442,11 +442,11 @@ class AwsAdapter:
             )
         return receipt
 
-    def ingest(self, calendar_table):
+    def ingest(self, calendar_table, *, horizon=20):
         if self.settings.amount_basis!="native" or not self.settings.sign_normalized:
             raise ValueError("Este perfil conserva importes y variación Engine1: requiere amount_basis=native y sign_normalized=true. Configura un adaptador explícito para otra convención.")
         self.schema()
-        self.resolve(calendar_table)
+        self.resolve(calendar_table, horizon=horizon)
         receipt = self.validate()
         self.audit_classifications()
         s = self.settings

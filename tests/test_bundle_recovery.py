@@ -132,6 +132,8 @@ def test_upgrade_old_run_and_continue_without_refitting_completed_folds(tmp_path
     legacy = json.loads((project.path / "training.json").read_text())
     legacy['curvas'].pop('objectives')
     legacy['curvas'].pop('selection_scope')
+    for field in ('input_specs','policies','calendar_sha256'):
+        legacy['curvas'].pop(field)
     legacy['curvas']['encoders'] = ['shared']
     (project.path / "training.json").write_text(json.dumps(legacy))
     shutil.rmtree(project.path / "runtime")

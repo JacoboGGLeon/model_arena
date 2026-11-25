@@ -13,7 +13,7 @@ from model_arena.storage import digest
 
 
 @pytest.mark.train
-@pytest.mark.parametrize("calendar_kind", ["csv", "parquet", "artifact", "families"])
+@pytest.mark.parametrize("calendar_kind", ["csv", "parquet", "artifact", "families", "dates_only"])
 def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypatch, calendar_kind):
     # Subprocesses inherit the CPU torch installation used by this test session.
     import torch
@@ -27,7 +27,10 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
     ]
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(dict.fromkeys(paths)))
     dates = pd.date_range("2025-01-01", periods=90).strftime("%Y-%m-%d").tolist()
-    calendar = pd.DataFrame({"fecha": dates, **{f"f{i:03d}": [0] * 90 for i in range(243)}})
+    width = {"parquet": 3, "dates_only": 0}.get(calendar_kind, 243)
+    calendar = pd.DataFrame({"fecha": dates, **{f"f{i:03d}": [0] * 90 for i in range(width)}})
+    if calendar_kind == "parquet":
+        calendar["f002"] = np.linspace(-1., 1., len(dates))
     calendar.to_csv(tmp_path / "calendar.csv", index=False)
     calendar_kwargs = {"calendar_path": tmp_path / "calendar.csv"}
     if calendar_kind == "parquet":
@@ -109,6 +112,21 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
         cfg["curvas"].update(trials=6, encoder_kinds=["mlp", "gru", "tft_compact"],
                              encoders=["independent"],
                              pruner=dict(kind="patience", patience=4, min_delta=1e20))
+    if calendar_kind == "parquet":
+        cfg["model"].pop("calendar_features")
+        cfg["curvas"].update(
+            inputs=["X0", "custom"],
+            input_specs={
+                "X0": {"historical": [], "future": []},
+                "custom": {"historical": ["f002", "f000"], "future": ["f001"]},
+            },
+            policies={"segmenter": "none", "fallback": ["global"],
+                      "transform": "linear_history", "selection_metric": "scaled_mae"},
+            final_epochs=2,
+        )
+    if calendar_kind == "dates_only":
+        cfg["model"].pop("calendar_features")
+        cfg["curvas"].update(inputs=["X0"], final_epochs=2)
     if calendar_kind == "families":
         cfg['curvas'].update(families=dict(encoder_decoder=1,tide=1,nhits=1,nlinear=1,dlinear=1,nbeats=1))
     (tmp_path / "training.json").write_text(json.dumps(cfg))
@@ -122,7 +140,11 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
         **calendar_kwargs,
         device="cpu",
     )
-    assert project.calendar_provenance()["feature_count"] == 243
+    assert project.calendar_provenance()["feature_count"] == width
+    if calendar_kind == "parquet":
+        assert project.plan()["final_epochs"] == 2
+        assert project.plan()["hpo_fits"] == 12
+        assert project.plan()["studies"][-1]["future"] == ["f001"]
     project.prepare().tune()
     import polars as pl
 
@@ -167,7 +189,11 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
     assert manifest["datasets"]["training_entities"]["rows"] > 0
     assert manifest["datasets"]["calendar_provenance"]["rows"] == 1
     assert manifest["datasets"]["hpo_trials"]["rows"] == audit.height
-    assert manifest["calendar_provenance"]["feature_count"] == 243
+    assert manifest["calendar_provenance"]["feature_count"] == width
+    assert [t["id"] for t in manifest["view"]["targets"]] == ["saldo", "variacion"]
+    if calendar_kind == "parquet":
+        assert manifest["policies"]["selection_metric"] == "scaled_mae"
+        assert manifest["policies"]["fallback"] == ["global"]
     assert manifest["calendar_provenance"]["generator"] == (
         "calendar_studio" if calendar_kind == "artifact" else "external_table"
     )
@@ -187,4 +213,4 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
         for fold in ["F1", "F2", "F3", "FUTURO"]
     ]
     assert all(item["candidate"].to_list() == assignments[0]["candidate"].to_list() for item in assignments)
-    assert all(torch.load(p, weights_only=False)["spec"]["epochs"] == 75 for p in weights)
+    assert all(torch.load(p, weights_only=False)["spec"]["epochs"] == cfg["curvas"]["final_epochs"] for p in weights)

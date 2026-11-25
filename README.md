@@ -2,7 +2,7 @@
 
 Explicit forecasting competition and observable learning histories.
 
-Version **0.1.5**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.5"`.
+Version **0.1.6**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.6"`.
 Source: https://github.com/JacoboGGLeon/model_arena · PyPI: https://pypi.org/project/model-arena-sdk/.
 
 The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. The storage profile was exercised end-to-end in ADA, including S3/Athena publication; automated tests use synthetic data.
@@ -30,7 +30,7 @@ publication = arena.publish(release, destination='publications')
 The default installation includes the complete forecasting and monitoring runtime. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
 
 ```bash
-python -m pip install "model-arena-sdk==0.1.5"
+python -m pip install "model-arena-sdk==0.1.6"
 ```
 
 In ADA, keep the existing Artifactory indexes and approved CUDA-compatible PyTorch installation. No package index or CUDA build is forced by the SDK. Default installation includes PyTorch and the dashboard dependencies; imports remain lazy and reading results does not initialize CUDA. Existing extras remain available for compatibility.
@@ -152,3 +152,18 @@ New MacProject runs use `curvas.objectives=["saldo","variacion"]` and `selection
 With 25 trials per supported input/family/objective: **750 candidates /2250 F1–F3 fits**, before pruning. Final selected configurations use 75 epochs. Budgets may be lowered before project creation. This supersedes the joint MAC counts above for new projects; legacy snapshots remain unchanged. Inventory candidate/selection_source strings encode mappings by target; daily and Engine2 retain a scalar candidate per target row.
 
 For the generic API, create a ModelArena per objective with `PanelSchema(target_cols=[target])`; arbitrary multi-target configurations remain supported explicitly. No hidden joint-to-independent conversion occurs in the generic API.
+
+## MAC feature contract and deliveries (0.1.6)
+
+The calendar determines the model input widths. Omit `model.calendar_features` to derive the width from the calendar. An explicit value still validates legacy deployments. The project records feature names, order, types, dates and hashes. X0 needs only the calendar's dates for the operating schedule.
+
+Add named input configurations through `curvas.inputs` and `curvas.input_specs`. Aliases use letters, digits and hyphens. Each configuration lists its ordered `historical` and `future` calendar features. When `input_specs` is omitted, X0–X3 keep the default combinations. Set `curvas.family_inputs` to restrict a family to explicit aliases. The plan rejects invalid explicit combinations before tuning.
+
+```python
+plan = project.plan()
+print(plan["hpo_fits"], plan["final_epochs"])
+project.export_layout("exports/engine2_future.parquet", engine="engine2", fold="FUTURO")
+project.export_layout("exports/engine3_f3.csv", engine="engine3", fold="F3")
+```
+
+`export_layout` uses the prepared release, or prepares it from completed predictions. Observatory exports the published Engine 2 or Engine 3 segment as a complete CSV. New MAC manifests declare policies, targets, units, metrics, quantiles and routing. Earlier publications use compatibility defaults. See [ADR 0009](docs/adr/0009-schema-driven-mac-profiles.md).

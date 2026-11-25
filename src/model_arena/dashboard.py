@@ -1,5 +1,6 @@
 """Observatory scaffold. Reads published evidence; does not create models."""
 import sys
+import json
 import tempfile
 
 import plotly.express as px
@@ -128,22 +129,29 @@ else:
     if presentation == "Tabla":
         st.dataframe(selected, hide_index=True, use_container_width=True)
     else:
-        targets = list(forecasts.target.unique())
-        fig = make_subplots(rows=len(targets), cols=1, subplot_titles=targets)
+        spec_path = results.path / "spec.json"
+        spec = json.loads(spec_path.read_text()) if spec_path.is_file() else {}
+        definitions = {item["id"]: item for item in spec.get("view", {}).get("targets", [])}
+        targets = list(dict.fromkeys([*definitions, *forecasts.target.unique()]))
+        fig = make_subplots(rows=len(targets), cols=1,
+                            subplot_titles=[definitions.get(t, {}).get("label", t) for t in targets])
         for i, target in enumerate(targets, 1):
             for role in ["Baseline", "Winner"]:
                 for q, values in selected[(selected.target == target) & (selected.role == role)].groupby("quantile"):
                     fig.add_trace(go.Scatter(x=values.ds, y=values.value,
                                              name=f"{role} · Q{q:g}", mode="lines",
                                              line=dict(dash="solid" if q == .5 else "dot")), row=i, col=1)
-        spec = __import__('json').loads((results.path / "spec.json").read_text())
         history = results.table("history")
-        if "Observado" in roles and not history.empty:
+        if "Observado" in roles and not history.empty and "schema" in spec:
             schema = spec["schema"]
             data = history[history[schema["id_col"]] == entity]
             for i, target in enumerate(targets, 1):
                 fig.add_trace(go.Scatter(x=data[schema["time_col"]], y=data[target], name=f"Observado · {target}"),
                               row=i, col=1)
+        for i, target in enumerate(targets, 1):
+            unit = definitions.get(target, {}).get("unit")
+            if unit:
+                fig.update_yaxes(title_text=unit, row=i, col=1)
         fig.update_layout(height=300*len(targets), template="plotly_white")
         st.plotly_chart(fig, use_container_width=True)
     alerts = results.table("alerts", entity=entity)

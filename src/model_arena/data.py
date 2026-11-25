@@ -2,6 +2,8 @@
 from dataclasses import dataclass
 
 import numpy as np
+
+from .scoring import pinball_error
 import pandas as pd
 
 from .storage import signature
@@ -96,5 +98,5 @@ def scale_for(history):
 def pinball(truth, prediction, quantiles):
     error = np.asarray(truth)[..., None] - np.asarray(prediction)
     q = np.asarray(quantiles)
-    return np.maximum(q * error, (q - 1) * error)
+    return pinball_error(error, q, maximum=np.maximum)
 

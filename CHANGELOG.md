@@ -1,3 +1,12 @@
+# 0.1.6
+
+- Derive MAC model input widths and ordered feature projections from the frozen calendar. Add declarative input aliases, family compatibility checks and a preflight HPO plan.
+- Share the numerical training, scoring, ranking and batch inference code between MAC and the generic API. Preserve MAC folds, accounting rules and Engine 2/3 schemas.
+- Freeze MAC segmentation, normalization, ranking, zero-shot fallback and final fit settings in the publication.
+- Publish presentation metadata and show individual objective winners in Observatory. Support opening publications created before presentation metadata was introduced.
+- Export typed Engine 2/3 Parquet and CSV through the SDK. Download complete published CSV from Observatory, including segments exceeding 100,000 rows.
+- Add synthetic tests for date-only X0, variable calendar dimensions, custom feature groups, objective routing, legacy recovery and a generic single-target neural workflow.
+
 # 0.1.5
 
 - Independent MAC HPO, pruning and single-target global networks for saldo/variation.

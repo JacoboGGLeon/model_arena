@@ -27,7 +27,7 @@ def capabilities(kind, historical, future):
     if kind not in FAMILIES:
         raise ValueError('Unknown complete forecasting family: '+kind)
     if kind in ('nlinear', 'dlinear', 'nbeats') and (historical or future):
-        raise ValueError(kind+' supports X0 only; calendar inputs are not silently discarded')
+        raise ValueError(kind+' supports history-only inputs (such as X0); historical and future calendar features are unsupported')
 
 
 def suggest_parameters(kind, trial, space):
