@@ -153,6 +153,7 @@ class ModelArena:
     def tune(self, prepared=None, *, df=None, static_df=None, cv=None, n_trials=None, epochs=None):
         import optuna
         from .pruning import make_pruner, trial_records, enqueue_encoder_schedule
+        from .models.complete import FAMILIES, capabilities, suggest_parameters
         data = self.prepare(prepared, df=df, static_df=static_df)
         cv = cv or self.spec.cv
         self._folds(data, cv)
@@ -160,22 +161,31 @@ class ModelArena:
         root = Path(run.path)
         space, candidates, scores, trials = self.spec.search, [], [], []
         for i, base in enumerate(self.spec.models):
-            if base.kind not in ("tft_compact", "encoder_decoder"):
+            if base.kind not in ("tft_compact", "encoder_decoder", *FAMILIES):
                 raise ValueError("HPO requires a declared search adapter; use cross_validation for fixed models")
             sampler = optuna.samplers.TPESampler(seed=self.spec.training.seed+i)
             study = optuna.create_study(direction="minimize", sampler=sampler,
                                         pruner=make_pruner(space.pruner, epochs_per_fold=epochs or self.spec.training.epochs),
                                         storage="sqlite:///"+str(root / "hpo.sqlite3"), study_name=base.alias)
-            enqueue_encoder_schedule(study, space.encoder_kind, n_trials or space.n_trials)
+            budget = n_trials or base.trials or space.n_trials
+            if base.kind in FAMILIES:
+                capabilities(base.kind,len(base.historical_features),len(base.future_features))
+            else:
+                enqueue_encoder_schedule(study, space.encoder_kind, budget)
             def objective(trial):
                 params = {key: trial.suggest_categorical(key, getattr(space, key))
-                          for key in ("encoder_kind", "encoder_design", "depth", "decoder_depth", "width", "activation")}
-                trial.set_user_attr("reference_group", params["encoder_kind"])
-                params.update(lr=trial.suggest_float("lr", *space.lr_range, log=True),
+                          for key in ("encoder_kind", "encoder_design", "depth", "decoder_depth", "width", "activation")} if base.kind not in FAMILIES else {}
+                if base.kind in FAMILIES:
+                    params = suggest_parameters(base.kind,trial,space)
+                    params["architecture"] = {**base.params.get("architecture",{}), **params["architecture"]}
+                trial.set_user_attr("reference_group", params.get("encoder_kind",base.kind))
+                if base.kind not in FAMILIES:
+                    params.update(lr=trial.suggest_float("lr", *space.lr_range, log=True),
                               weight_decay=trial.suggest_float("weight_decay", *space.wd_range, log=True),
                               dropout=space.dropout)
                 model_spec = base.model_copy(update={"params": {**base.params, **params}})
                 candidate = f"M{i:02d}_T{trial.number:04d}"
+                trial.set_user_attr("family", base.kind)
                 trial.set_user_attr("candidate_id", candidate)
                 candidates.append(dict(candidate=candidate, model=model_spec.model_dump(mode="json")))
                 write_json(root / "candidates.json", candidates)
@@ -187,7 +197,7 @@ class ModelArena:
                 return value
             def save_trials(study, trial):
                 write_table(root / "trials.json", pd.DataFrame(trials+trial_records(study, base.alias)))
-            study.optimize(objective, n_trials=n_trials or space.n_trials, callbacks=[save_trials])
+            study.optimize(objective, n_trials=budget, callbacks=[save_trials])
             trials.extend(trial_records(study, base.alias))
         write_json(root / "sampler.json", {"kind": "TPESampler", "optuna_version": optuna.__version__,
                                            "seed": self.spec.training.seed,

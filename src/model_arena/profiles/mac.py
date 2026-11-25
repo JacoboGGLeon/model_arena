@@ -44,9 +44,14 @@ class MacProject:
         from ..contracts import PruningSpec
 
         PruningSpec.model_validate(training["curvas"].get("pruner") or {})
+        families=training['curvas'].get('families',{})
+        if ('families' in training['curvas'] and not families) or set(families)-{'encoder_decoder','tide','nhits','nlinear','dlinear'} or any(not isinstance(n,int) or n<1 for n in families.values()):
+            raise ValueError('Invalid family names or per-family trial budgets')
         kinds = training["curvas"].get("encoder_kinds", ["tft_compact"])
         from ..contracts import SearchSpec
         SearchSpec(encoder_kind=kinds)
+        if families.get("encoder_decoder",len(kinds)) < len(kinds):
+            raise ValueError("Encoder–Decoder family budget must cover all declared encoders")
         if len(set(kinds)) != len(kinds) or training["curvas"]["trials"] < len(kinds):
             raise ValueError("Declare distinct encoders and at least one trial per encoder")
         from ..calendar import prepare_snapshot

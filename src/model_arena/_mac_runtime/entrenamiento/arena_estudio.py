@@ -50,7 +50,17 @@ def population(run, config, spec):
 
 
 def candidate_for(trial, inp, cfg):
-    return SimpleNamespace(id=trial.user_attrs.get('resume_candidate_id', f'{inp}_T{trial.number:04d}'),inputs=inp,
+    family=cfg.get('family','encoder_decoder')
+    if family != 'encoder_decoder':
+        from model_arena.models.complete import suggest_parameters
+        from model_arena.contracts import SearchSpec
+        space=SearchSpec(width=cfg['widths'],depth=cfg['depths'],decoder_depth=cfg['decoder_depths'],
+            lr_range=cfg['lr_range'],wd_range=cfg['wd_range'],dropout=cfg['dropout'])
+        params=suggest_parameters(family,trial,space)
+        return SimpleNamespace(id=trial.user_attrs.get('resume_candidate_id',f'{inp}_{family}_T{trial.number:04d}'),
+            inputs=inp,family=family,family_params=params,encoder_kind=family,encoder_design='independent',
+            lr=params['lr'],weight_decay=params['weight_decay'])
+    return SimpleNamespace(id=trial.user_attrs.get('resume_candidate_id', f'{inp}_T{trial.number:04d}'),inputs=inp,family='encoder_decoder',
         encoder_kind=trial.suggest_categorical('encoder_kind',cfg['encoder_kinds']) if 'encoder_kinds' in cfg else 'tft_compact',
         encoder_design=trial.suggest_categorical('encoder',cfg['encoders']),
         depth=trial.suggest_categorical('encoder_depth',cfg['depths']),
@@ -100,6 +110,8 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
     if path.exists():
         saved = torch.load(path,map_location=device,weights_only=False)
         model = CurveTFT(spec,candidate,cfg['dropout']).to(device)
+        if hasattr(model,'external') and saved.get('upstream_provenance') != model.external.provenance:
+            raise ValueError('Cambió la implementación upstream del checkpoint')
         model.load_state_dict(saved['state_dict'])
         history = saved.get('training_history')
         if not history:
@@ -122,7 +134,7 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
     model = fit_curves(known,end,spec,candidate,device,calendar,cfg,on_epoch=on_epoch,monitor=monitor)
     temp = path.with_suffix('.tmp')
     check_space(root, extra_bytes=sum(v.numel()*v.element_size() for v in model.state_dict().values())*2, stage="checkpoint")
-    torch.save(dict(state_dict=model.state_dict(),candidate=vars(candidate),spec=asdict(spec),
+    torch.save(dict(upstream_provenance=model.external.provenance if hasattr(model,'external') else None,state_dict=model.state_dict(),candidate=vars(candidate),spec=asdict(spec),
                     training_history=history,loss_monitor=monitor.selection,end=end,fold=fold,scaling='asinh(history/scale); forecast*scale',version='0.11.0',training_account_ids=[s.id for s in seen]),temp)
     temp.replace(path)
     return model
@@ -159,16 +171,24 @@ def run_study(run, config_path, device, *, stage="all"):
     folds = [(f'F{i+1}',len(axis)-(3-i)*spec.horizon) for i in range(3)]
     cfg=config['curvas'];candidates=[];score_frames=[];trials=[];trial_audit=[]
     (root/'predicciones').mkdir(exist_ok=True)
-    for inp in cfg['inputs']:
-        sampler_path=root/f'{inp}_sampler.pkl'
+    families=cfg.get('families',{'encoder_decoder':cfg['trials']})
+    tasks=[(inp,family,budget) for inp in cfg['inputs'] for family,budget in families.items()
+           if family not in ('nlinear','dlinear') or inp=='X0']
+    for inp,family,budget in tasks:
+        cfg={**config['curvas'],'family':family,'trials':budget}
+        study_key=inp if 'families' not in cfg else inp+'_'+family
+        sampler_path=root/f'{study_key}_sampler.pkl'
         sampler=pickle.loads(sampler_path.read_bytes()) if sampler_path.exists() else optuna.samplers.TPESampler(seed=spec.seed+cfg['inputs'].index(inp))
         pruner=make_pruner(cfg.get('pruner'),epochs_per_fold=spec.epochs)
-        study=optuna.create_study(study_name=inp,storage='sqlite:///'+str(root/'hpo.sqlite3'),load_if_exists=True,direction='minimize',sampler=sampler,pruner=pruner)
-        if 'encoder_kinds' in cfg:
+        study=optuna.create_study(study_name=study_key,storage='sqlite:///'+str(root/'hpo.sqlite3'),load_if_exists=True,direction='minimize',sampler=sampler,pruner=pruner)
+        if family=='encoder_decoder' and 'encoder_kinds' in cfg:
             enqueue_encoder_schedule(study,cfg['encoder_kinds'],cfg['trials'])
         def objective(trial):
             check_space(root, stage=f'trial {inp} {trial.number}')
             candidate=candidate_for(trial,inp,cfg)
+            if 'families' in cfg and family=='encoder_decoder' and 'resume_candidate_id' not in trial.user_attrs:
+                candidate.id=f'{inp}_{family}_T{trial.number:04d}'
+            trial.set_user_attr('family',family)
             trial.set_user_attr('reference_group',candidate.encoder_kind)
             trial.set_user_attr('candidate_id',candidate.id)
             write(root/f'{candidate.id}.json',vars(candidate))
@@ -196,7 +216,7 @@ def run_study(run, config_path, device, *, stage="all"):
                 import traceback
                 traceback.print_exc()
                 raise
-        enqueue_interrupted(study, inp)
+        enqueue_interrupted(study, study_key)
         remaining=cfg['trials']-len(study.get_trials(states=(optuna.trial.TrialState.COMPLETE,optuna.trial.TrialState.PRUNED)))
         def persist_sampler(study, trial):
             temp=sampler_path.with_suffix('.tmp')

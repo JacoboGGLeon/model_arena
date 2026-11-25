@@ -2,7 +2,7 @@
 
 Explicit forecasting competition and observable learning histories.
 
-Version **0.1.3**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.3"`.
+Version **0.1.4**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.4"`.
 Source: https://github.com/JacoboGGLeon/model_arena · PyPI: https://pypi.org/project/model-arena-sdk/.
 
 The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. The storage profile was exercised end-to-end in ADA, including S3/Athena publication; automated tests use synthetic data.
@@ -30,7 +30,7 @@ publication = arena.publish(release, destination='publications')
 The default installation includes the complete forecasting and monitoring runtime. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
 
 ```bash
-python -m pip install "model-arena-sdk==0.1.3"
+python -m pip install "model-arena-sdk==0.1.4"
 ```
 
 In ADA, keep the existing Artifactory indexes and approved CUDA-compatible PyTorch installation. No package index or CUDA build is forced by the SDK. Default installation includes PyTorch and the dashboard dependencies; imports remain lazy and reading results does not initialize CUDA. Existing extras remain available for compatibility.
@@ -121,3 +121,23 @@ MAC configuration uses `curvas.encoder_kinds=["mlp","gru","tft_compact"]` and `c
 This is **25 total trials per input**, balanced 9/8/8 in declared order. For 25 per encoder use 75 total trials per input. Each encoder/input retains its first complete reference before pruning. One TPE study per input samples the remaining hyperparameters across the balanced family allocation; these are not isolated per-encoder studies. All 4 inputs use at most 100 candidates / 300 fold fits at the 25-total setting. Failed disk retries retain identity and do not consume another completed/pruned candidate slot.
 
 Existing projects keep frozen code/configuration and default to TFT when encoder_kind is absent. Use a new project to explore all three families. Stored candidate JSON and trial parameter JSON identify the architecture. No model quality or runtime advantage is claimed without a real ADA comparison.
+
+## Complete forecasting families (0.1.4)
+
+`ModelSpec(kind="tide" | "nhits" | "nlinear" | "dlinear", alias=..., trials=25)` declares a complete model family, not a TFT encoder. Each target has an independent upstream network inside the candidate; selection combines target scores using the existing policy. The registered families use NeuralForecast **3.1.2**, with Lightning 2.5.x for compatibility with tested PyTorch 2.6. Architecture forwards are trained by Model Arena's AdamW/window/epoch loop, not a Lightning Trainer. Quantile outputs are monotonically rearranged. History uses linear window normalization for these families; Encoder–Decoder keeps its original transform.
+
+NLinear/DLinear support **X0 only**. Supplying covariates raises an error. TiDE/NHITS support past and future covariates. The historical portion of the future-covariate channel is explicitly zero-masked; past calendar enters the separate historical channel. No observed future targets enter inference. Complete families have their own typed parameter container (`lr`, `weight_decay`, `architecture`); encoder-layer/shared flags are not applied to them.
+
+```python
+models = [
+    ModelSpec(alias="ED_X0", kind="encoder_decoder", trials=25),
+    ModelSpec(alias="TiDE_X0", kind="tide", trials=25),
+    ModelSpec(alias="NHITS_X0", kind="nhits", trials=25),
+    ModelSpec(alias="NLinear_X0", kind="nlinear", trials=25),
+    ModelSpec(alias="DLinear_X0", kind="dlinear", trials=25),
+]
+```
+
+Each `ModelSpec` has a separate TPE study and budget; `tune(n_trials=...)` explicitly overrides those budgets. Spaces tune TiDE dense/temporal widths and depths; NHITS block counts, pooling, MLP widths/activation; DLinear moving-average length; all families tune AdamW LR/weight decay. NLinear has no invented depth/activation dimensions.
+
+MAC deployment opts in through `curvas.families={"encoder_decoder":25,"tide":25,"nhits":25,"nlinear":25,"dlinear":25}`. Linear families run only on X0; all other configured inputs are retained for the other families. This means up to **350 candidates / 1050 fold fits** for X0–X3, before pruning; final fits remain 75 epochs. Missing `families` preserves the old Encoder–Decoder-only behavior. Capabilities and budgets are explicit, not inferred from entropy budgets. Checkpoints record upstream version and architecture-source hashes; changed upstream code is rejected when restoring. Create a new MAC project for this protocol.

@@ -22,6 +22,13 @@ def persistence(history, horizon):
 class CurveTFT(nn.Module):
     def __init__(self, spec, candidate, dropout):
         super().__init__()
+        if getattr(candidate, 'family', 'encoder_decoder') != 'encoder_decoder':
+            from agentic_forecasting.complete_network import CompleteNetwork, CompleteParameters
+            self.external = CompleteNetwork(family=candidate.family,targets=2,window=spec.window,
+                h=spec.horizon,historical=spec.calendar_features if candidate.inputs in ('X1','X3') else 0,
+                future=spec.calendar_features if candidate.inputs in ('X2','X3') else 0,
+                parameters=CompleteParameters.model_validate(candidate.family_params))
+            return
         width = candidate.width
         activation = getattr(candidate, "activation", "ELU")
         activations = {"ReLU": nn.ReLU, "Mish": nn.Mish, "GELU": nn.GELU, "Tanh": nn.Tanh, "ELU": nn.ELU}
@@ -52,6 +59,8 @@ class CurveTFT(nn.Module):
         self.quantiles = nn.ModuleList(heads)
 
     def forward(self, features):
+        if hasattr(self, 'external'):
+            return self.external(features['history_y'],features.get('history_calendar'),features.get('future_calendar'))
         history = features["history_y"]
         representations = []
         for enc, pos in zip(self.encoders, self.positions):

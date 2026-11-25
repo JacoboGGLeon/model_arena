@@ -96,6 +96,6 @@ def trial_records(study, inp):
             objective_value=trial.value if trial.state == optuna.trial.TrialState.COMPLETE else None,
             last_intermediate_value=trial.intermediate_values[max(trial.intermediate_values)] if trial.intermediate_values else None,
             pruned_fold=attrs.get("pruned_fold"), pruned_epoch=attrs.get("pruned_epoch"),
-            parameters_json=json.dumps(trial.params, sort_keys=True),
+            parameters_json=json.dumps({**trial.params,"family":attrs.get("family","encoder_decoder")}, sort_keys=True),
         ))
     return records

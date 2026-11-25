@@ -257,7 +257,7 @@ def render_app(config,athena):
      if audit.empty:st.info('Esta publicación no incluye el registro de estados de HPO.')
      else:
       import plotly.express as px
-      audit['encoder_kind']=audit.parameters_json.map(lambda value:json.loads(value).get('encoder_kind','tft_compact'))
+      audit['encoder_kind']=audit.parameters_json.map(lambda value:json.loads(value).get('encoder_kind',json.loads(value).get('family','tft_compact')))
       counts=audit.groupby(['input','encoder_kind','state']).size().reset_index(name='trials')
       st.plotly_chart(px.bar(counts,x='input',y='trials',color='state',barmode='stack',labels={'input':'Input','trials':'Intentos','state':'Estado'}),use_container_width=True)
       st.dataframe(audit,hide_index=True,use_container_width=True)

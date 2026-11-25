@@ -35,6 +35,7 @@ class TemporalCV(Contract):
 class ModelSpec(Contract):
     alias: str
     kind: str = "tft_compact"
+    trials: int | None = Field(default=None, ge=1)
     historical_features: list[str] = Field(default_factory=list)
     future_features: list[str] = Field(default_factory=list)
     params: dict[str, Any] = Field(default_factory=dict)
@@ -115,7 +116,7 @@ class ArenaSpec(Contract):
             raise ValueError("At least one model and unique aliases are required")
         if self.quantiles != sorted(set(self.quantiles)) or not all(0 < q < 1 for q in self.quantiles):
             raise ValueError("Quantiles must be unique, increasing and between zero and one")
-        if self.quantiles != [0.025, 0.5, 0.975] and any(m.kind in ("tft_compact", "encoder_decoder") for m in self.models):
+        if self.quantiles != [0.025, 0.5, 0.975] and any(m.kind in ("tft_compact", "encoder_decoder", "tide", "nhits", "nlinear", "dlinear") for m in self.models):
             raise ValueError("This TFT implementation supports quantiles .025, .5, .975")
         if self.freq is None and self.calendar is None:
             raise ValueError("Declare a frequency or an authoritative calendar")
