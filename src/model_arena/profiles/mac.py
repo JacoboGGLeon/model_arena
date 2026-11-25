@@ -26,7 +26,9 @@ class MacProject:
         self.settings = read_json(self.path / "project.json")
 
     @classmethod
-    def create(cls, path, *, training_config, publication_config, calendar_path, device="cuda"):
+    def create(
+        cls, path, *, training_config, publication_config, calendar_path=None, calendar=None, device="cuda"
+    ):
         path = Path(path).expanduser().resolve()
         if path.exists():
             raise FileExistsError("Choose a new project directory or reopen it with MacProject(path)")
@@ -35,15 +37,26 @@ class MacProject:
         training = read_json(training_config)
         if training.get("requested_accounts") != 0 or training.get("aws", {}).get("account_limit") != 0:
             raise ValueError("The profile requires the complete eligible universe, account limits = 0")
+        if training["model"]["calendar_features"] != 243:
+            raise ValueError("The MAC compatibility runtime requires exactly 243 calendar features")
         training["curvas"]["final_epochs"] = 75
         training["curvas"]["loss_monitor_accounts"] = None
+        from ..contracts import PruningSpec
+
+        PruningSpec.model_validate(training["curvas"].get("pruner") or {})
+        from ..calendar import prepare_snapshot
+
+        snapshot = prepare_snapshot(
+            calendar=calendar, calendar_path=calendar_path, n_features=training["model"]["calendar_features"]
+        )
         check_space(path, stage="crear proyecto")
         path.mkdir(parents=True)
         source = Path(str(files("model_arena") / "_mac_runtime"))
         shutil.copytree(source, path / "runtime", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
         calendar = path / "runtime/entrenamiento/data/calendar_authoritative.csv"
         calendar.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(calendar_path, calendar)
+        calendar.write_bytes(snapshot.csv_bytes)
+        calendar_manifest = snapshot.save(path)
         write_json(path / "training.json", training)
         shutil.copy2(publication_config, path / "publication.json")
         settings = dict(
@@ -51,6 +64,7 @@ class MacProject:
             training_sha=digest(path / "training.json"),
             publication_sha=digest(path / "publication.json"),
             calendar_sha=digest(calendar),
+            calendar_manifest_sha=digest(calendar_manifest),
             code_sha=digest(path / "runtime/BUILD_MONITOR.json"),
         )
         write_json(path / "project.json", settings)
@@ -66,6 +80,10 @@ class MacProject:
         }
         if any(digest(path) != self.settings[key] for key, path in paths.items()):
             raise ValueError("Project identity changed; create a new project")
+        if "calendar_manifest_sha" in self.settings:
+            from ..calendar import verify_snapshot
+
+            verify_snapshot(self.path, self.settings["calendar_manifest_sha"])
         root = self.path / "runtime"
         for name, expected in read_json(root / "BUILD_MONITOR.json")["files"].items():
             if digest(root / name) != expected:
@@ -121,6 +139,20 @@ class MacProject:
     def publish(self):
         self._stage("publish")
         return read_json(self.path / "release/published.json")
+
+    def calendar_provenance(self):
+        """Read verified frozen calendar provenance; never regenerate it."""
+        self.verify()
+        path = self.path / "calendar/provenance.json"
+        return (
+            read_json(path)
+            if path.exists()
+            else {
+                "generator": "legacy_snapshot",
+                "calendar_sha256": self.settings["calendar_sha"],
+                "source_metadata": None,
+            }
+        )
 
     def status(self):
         path = self.path / "status.json"

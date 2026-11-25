@@ -2,7 +2,7 @@
 
 Explicit forecasting competition and observable learning histories.
 
-Version **0.1.1**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.1"`.
+Version **0.1.2**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.2"`.
 Source: https://github.com/JacoboGGLeon/model_arena · PyPI: https://pypi.org/project/model-arena-sdk/.
 
 The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. The storage profile was exercised end-to-end in ADA, including S3/Athena publication; automated tests use synthetic data.
@@ -30,7 +30,7 @@ publication = arena.publish(release, destination='publications')
 The default installation includes the complete forecasting and monitoring runtime. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
 
 ```bash
-python -m pip install "model-arena-sdk==0.1.1"
+python -m pip install "model-arena-sdk==0.1.2"
 ```
 
 In ADA, keep the existing Artifactory indexes and approved CUDA-compatible PyTorch installation. No package index or CUDA build is forced by the SDK. Default installation includes PyTorch and the dashboard dependencies; imports remain lazy and reading results does not initialize CUDA. Existing extras remain available for compatibility.
@@ -61,3 +61,52 @@ This read-only monitor filters fixed training/validation curves by input, fold, 
 An explicit upgrade of an unpublished SDK 0.1 run is available through `model_arena.profiles.storage_upgrade.upgrade(path)`. It verifies the old runtime, backs up identity metadata and runtime, validates CSV-to-Parquet conversion before removing CSVs, and retains models/trials. Existing published releases do not need conversion. For a tested ADA bundle project, `MacProject(path)` can reuse its runtime snapshot unchanged.
 
 The disk reserve is a point-in-time guard, not a guarantee of capacity for an entire run. The model mathematics, target scaling and accounting rules are unchanged.
+
+## Calendar Studio integration (0.1.2)
+
+The complete SDK installation includes Calendar Studio. Its use is explicit: Model Arena still accepts external CSV/Parquet calendars and the generic forecasting core does not prescribe a calendar rule engine.
+
+```python
+from calendar_studio import CalendarStudio, load_holidays
+from model_arena.profiles.mac import MacProject
+
+calendar = CalendarStudio.from_profile("mac_legacy_v1").generate(
+    start="2022-01-01", end="2027-12-31",
+    holidays=load_holidays("private/festivos.csv", date_col="fecha"),
+).view("mac_legacy_v1")
+
+project = MacProject.create(
+    "runs/my_project", training_config="private/training.json",
+    publication_config="private/publication.json", calendar=calendar, device="cuda",
+)
+print(project.calendar_provenance())
+```
+
+Pass exactly one of `calendar` (a validated artifact-like provider or a DataFrame) and `calendar_path` (CSV, Parquet or a Calendar Studio artifact directory). MAC requires `fecha` and exactly the configured binary feature count; the current MAC runtime uses 243 features. Full Calendar Studio outputs have 245 features and must be projected explicitly using `.view("mac_legacy_v1")`. No columns are silently discarded.
+
+Each new project freezes source bytes/metadata and a Zstandard `calendar/features.parquet`, while retaining an exact CSV compatibility snapshot for its existing training runtime. Provenance records generator/version, profile/view, input rules and holidays, date coverage, ordered feature names and hashes. Project verification detects changed provenance or frozen input files. CSV input bytes are preserved exactly.
+
+Historical projects without structured provenance remain supported and retain their original runtime and calendar snapshots. Installing a newer library does not regenerate their calendars. To use corrected holidays, create a new project. The supplied deployment holiday list includes 2026-11-02; review its coverage before extending to other years.
+
+New publications add a separate `calendar_provenance` dataset and include frozen calendar sources in their raw deliveries. Observatory's provenance expander queries it on demand; older publications without that table/row remain usable. Existing Engine 2/3 layouts are unchanged.
+
+For other projects, `model_arena.calendar.to_features(calendar, time_col="ds")` returns an independent date-feature table. DataFrames require an explicit `date_col`; continuous finite numeric calendar features are permitted outside the MAC adapter. Join/broadcast this table to the panel as required by your schema.
+
+## Optional HPO patience (0.1.2)
+
+The new ADA deployment uses 15 trials per input, at most 15 epochs per fold, and four consecutive epochs without improvement on fixed temporal validation. The first trial of each input completes all selection folds to retain a complete reference; subsequent stagnant trials are marked `PRUNED`. The patience counter resets for each fold. A pruned candidate is discarded as a whole; partial fold results do not enter winner selection. The final fit still runs 75 epochs from scratch, without pruning.
+
+```python
+from model_arena import PruningSpec, SearchSpec, TrainingSpec
+
+training = TrainingSpec(epochs=15, final_epochs=75)
+search = SearchSpec(n_trials=15, pruner=PruningSpec(
+    kind="patience", patience=4, min_delta=0.0, min_completed_trials=1,
+))
+```
+
+Supply these contracts in `ArenaSpec(training=training, search=search, ...)`. Generic HPO reports the mean validation pinball over declared targets and training entities. The MAC deployment uses `model.epochs=15` and `curvas.pruner={"kind":"patience","patience":4,"min_delta":0.0,"min_completed_trials":1}` in `training.json`; it reports the mean normalized validation pinball for saldo/variación on the fixed monitored training accounts. Configurations without an explicit pruning policy remain unpruned.
+
+One step is one reported epoch. With the first best value at epoch 1, unchanged losses at epochs 2–5 prune at the end of epoch 5. Any strictly lower loss resets patience when `min_delta=0`; ties count as no improvement. Reports use distinct step ranges per fold, and the pruner compares values only inside the current fold. `FoldPatiencePruner` implements this exact policy through Optuna's `BasePruner`; it is not Optuna's `PatientPruner` wrapper or a cross-trial Median/Hyperband rule. No smoothing is applied to the reported curves.
+
+The 15-attempt limit counts `COMPLETE` plus `PRUNED`. Disk-interrupted retries retain their original identity and parameters. Trial state, pruning fold/epoch and parameters are retained in Parquet; only complete trials have a final objective value. New publications add `hpo_trials`, accessible on demand in Observatory, while their partial epoch curves remain available. Reopening an old run does not modify its configuration or frozen runtime.

@@ -16,7 +16,7 @@ def read_calendar(path, expected_sha256=None):
     actual = hashlib.sha256(path.read_bytes()).hexdigest()
     if expected_sha256 and actual != expected_sha256:
         raise ValueError("Authoritative calendar SHA-256 mismatch")
-    frame = pl.read_csv(path)
+    frame = pl.read_parquet(path) if path.suffix == ".parquet" else pl.read_csv(path)
     dates = frame["fecha"].to_list()
     names = [x for x in frame.columns if x != "fecha"]
     features = frame.select(names).to_numpy()

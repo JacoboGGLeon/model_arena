@@ -58,6 +58,30 @@ def test_hpo_persists_all_candidates_and_nop_pruner(panel, neural):
     assert arena._models == {}
 
 
+def test_real_hpo_pruning_keeps_partial_curves_out_of_selection(panel, neural):
+    from pathlib import Path
+    from model_arena import PruningSpec
+
+    df, static = panel
+    search = neural.search.model_copy(update={
+        "width": [8], "depth": [1], "decoder_depth": [1], "encoder_design": ["shared"],
+        "activation": ["GELU"], "pruner": PruningSpec(kind="patience", min_delta=1e20),
+    })
+    arena = ModelArena(neural.model_copy(update={"search": search}))
+    study = arena.tune(df=df, static_df=static, n_trials=2, epochs=6)
+    root = Path(study.path)
+    trials = read_table(root / "trials.json")
+    assert trials.state.tolist() == ["COMPLETE", "PRUNED"]
+    pruned = trials.iloc[1].candidate
+    curves = arena.results.learning_curves(candidate=pruned)
+    assert set(curves.epoch) == set(range(1, 6))
+    assert set(curves.fold) == {"F1"}
+    assert pruned not in set(read_table(root / "scores.json").candidate)
+    assert not (root / f"{pruned}_F1.weights").exists()
+    selected = arena.select(study)
+    assert selected.path
+
+
 def test_monitor_evaluation_does_not_change_training_weights(panel, neural):
     import torch
     df, static = panel

@@ -62,6 +62,14 @@ if presentation == "Gráfico":
     st.plotly_chart(figure(frame, None if highlight == "Ninguno" else highlight), use_container_width=True)
 else:
     st.dataframe(frame, use_container_width=True, hide_index=True)
+audit_path = project / "run/curvas/hpo_trials.parquet"
+if audit_path.is_file():
+    with st.expander("Estados HPO · completados y podados"):
+        audit = pl.read_parquet(audit_path)
+        if inp != "Todos":
+            audit = audit.filter(pl.col("input") == inp)
+        st.dataframe(audit, use_container_width=True, hide_index=True)
+        st.caption("PRUNED conserva curvas parciales y no participa en la selección de ganadores.")
 buffer = BytesIO()
 frame.write_parquet(buffer, compression="zstd")
 st.download_button(

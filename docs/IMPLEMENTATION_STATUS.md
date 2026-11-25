@@ -7,7 +7,7 @@ Esta entrega es un versión 0.1 y separa dos rutas ejecutables:
 
 El adaptador separa tune, select, fit, predict, postprocess y publish; el ganador de cada serie se conserva como configuración única en F1/F2/F3/FUTURO. Las curvas históricas usan los pesos de cada corte, no pesos finales retrospectivos. F1–F3 siguen siendo evidencia utilizada en selección.
 
-El ajuste final es de 75 épocas. Se conserva TPESampler/NopPruner y el espacio configurado del perfil. El monitor por época cubre todas las entrenables, con filas por cuenta/objetivo. Los budgets siguen siendo la segmentación por entropía existente. Las atípicas conservan zero-shot para el ajuste y se evalúan como entrenables en el contrato de alertamiento.
+El ajuste final es de 75 épocas. Se conserva TPESampler y el espacio configurado del perfil. Las nuevas configuraciones ADA usan 15 épocas máximas por ajuste HPO y FoldPatiencePruner con paciencia 4 sobre validación fija; el primer trial de cada input completa los folds como referencia. Configuraciones históricas sin pruner siguen con NopPruner. El monitor por época cubre todas las entrenables, con filas por cuenta/objetivo. Los budgets siguen siendo la segmentación por entropía existente. Las atípicas conservan zero-shot para el ajuste y se evalúan como entrenables en el contrato de alertamiento.
 
 `obs_training_entities` añade la evidencia desglosada de aprendizaje sin cambiar los esquemas antiguos de entrenamiento. Total, budget y cuenta se consultan agregando sus filas en Athena. La evaluación completa por época aumenta tiempo, disco y volumen publicado; no limita las cuentas entrenadas.
 

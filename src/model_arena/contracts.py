@@ -41,7 +41,7 @@ class ModelSpec(Contract):
 
 
 class TrainingSpec(Contract):
-    epochs: int = Field(default=20, ge=1)
+    epochs: int = Field(default=15, ge=1)
     final_epochs: int = Field(default=75, ge=1)
     batch_size: int = Field(default=128, ge=1)
     samples_per_epoch: int = Field(default=4096, ge=1)
@@ -51,8 +51,16 @@ class TrainingSpec(Contract):
     cpu_threads: int = Field(default=4, ge=1)
 
 
+class PruningSpec(Contract):
+    kind: Literal["none", "patience"] = "none"
+    patience: int = Field(default=4, ge=1)
+    min_delta: float = Field(default=0.0, ge=0, allow_inf_nan=False)
+    min_completed_trials: int = Field(default=1, ge=1)
+
+
 class SearchSpec(Contract):
     n_trials: int = Field(default=15, ge=1)
+    pruner: PruningSpec = Field(default_factory=PruningSpec)
     encoder_design: list[Literal["shared", "independent"]] = ["shared", "independent"]
     depth: list[int] = [2, 3]
     decoder_depth: list[int] = [1, 2]

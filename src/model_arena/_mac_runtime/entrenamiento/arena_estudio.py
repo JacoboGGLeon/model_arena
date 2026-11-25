@@ -10,6 +10,7 @@ import polars as pl
 import torch
 from model_arena.disk import check_space, DiskSpaceError
 from model_arena.hpo_resume import enqueue_interrupted
+from model_arena.pruning import make_pruner, report_epoch, trial_records
 from model_arena.loss_store import write_parquet
 from entrenar_curvas import (ROOT, read, write, spec_for, execute, sha, make_frame)
 from agentic_forecasting import Series
@@ -90,7 +91,7 @@ def combine_history(root):
     return path
 
 
-def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, cfg):
+def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, cfg, *, trial=None, fold_index=0):
     if fold=='FUTURO':spec=replace(spec,epochs=int(cfg.get('final_epochs',spec.epochs)))
     if spec.epochs<1:raise ValueError('Épocas debe ser positivo')
     path = root/'modelos'/f'{candidate.id}_{fold}.pt'
@@ -110,6 +111,10 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
     def on_epoch(row):
         history.append(row)
         persist_history(root, candidate.id, fold, history)
+        if trial is not None:
+            value = float(np.mean([row['fixed_validation_saldo'],row['fixed_validation_variacion']]))
+            report_epoch(trial,value,epoch=row['epoch'],fold_index=fold_index,
+                epochs_per_fold=spec.epochs,fold=fold)
     print(f'Ajustando {candidate.id} · {fold} · {len(known)} cuentas', flush=True)
     from monitor_learning import build_monitor
     monitor=build_monitor(known,seen,end,spec,candidate,device,calendar,fold,cfg,detail_path=root/"loss_entities"/f"{candidate.id}_{fold}")
@@ -151,24 +156,25 @@ def run_study(run, config_path, device, *, stage="all"):
     dates = axis+calendar.after(axis[-1],spec.horizon)
     calendar.take(dates)
     folds = [(f'F{i+1}',len(axis)-(3-i)*spec.horizon) for i in range(3)]
-    cfg=config['curvas'];candidates=[];score_frames=[];trials=[]
+    cfg=config['curvas'];candidates=[];score_frames=[];trials=[];trial_audit=[]
     (root/'predicciones').mkdir(exist_ok=True)
     for inp in cfg['inputs']:
         sampler_path=root/f'{inp}_sampler.pkl'
         sampler=pickle.loads(sampler_path.read_bytes()) if sampler_path.exists() else optuna.samplers.TPESampler(seed=spec.seed+cfg['inputs'].index(inp))
-        study=optuna.create_study(study_name=inp,storage='sqlite:///'+str(root/'hpo.sqlite3'),load_if_exists=True,direction='minimize',sampler=sampler,pruner=optuna.pruners.NopPruner())
+        pruner=make_pruner(cfg.get('pruner'),epochs_per_fold=spec.epochs)
+        study=optuna.create_study(study_name=inp,storage='sqlite:///'+str(root/'hpo.sqlite3'),load_if_exists=True,direction='minimize',sampler=sampler,pruner=pruner)
         def objective(trial):
             check_space(root, stage=f'trial {inp} {trial.number}')
             candidate=candidate_for(trial,inp,cfg)
             trial.set_user_attr('candidate_id',candidate.id)
             write(root/f'{candidate.id}.json',vars(candidate))
             scores=[]
-            for fold,end in folds:
+            for fold_index,(fold,end) in enumerate(folds):
                 path=root/'predicciones'/f'{candidate.id}_{fold}.parquet'
                 if path.exists():
                     frame=pl.read_parquet(path)
                 else:
-                    model=fit_saved(root,seen,dates,end,spec,candidate,fold,device,calendar,cfg)
+                    model=fit_saved(root,seen,dates,end,spec,candidate,fold,device,calendar,cfg,trial=trial,fold_index=fold_index)
                     frame=emit(model,seen,dates,end,spec,candidate,fold,device,calendar)
                     write_parquet(frame,path)
                 scores.append(loss_rows(frame,candidate,inventory))
@@ -178,6 +184,8 @@ def run_study(run, config_path, device, *, stage="all"):
         def objective(trial, implementation=unguarded_objective):
             try:
                 return implementation(trial)
+            except optuna.TrialPruned:
+                raise
             except Exception as exc:
                 if isinstance(exc, DiskSpaceError) or getattr(exc, "errno", None) == 28:
                     trial.set_user_attr("retry_after_disk", True)
@@ -185,11 +193,18 @@ def run_study(run, config_path, device, *, stage="all"):
                 traceback.print_exc()
                 raise
         enqueue_interrupted(study, inp)
-        remaining=cfg['trials']-len(study.get_trials(states=(optuna.trial.TrialState.COMPLETE,)))
+        remaining=cfg['trials']-len(study.get_trials(states=(optuna.trial.TrialState.COMPLETE,optuna.trial.TrialState.PRUNED)))
         def persist_sampler(study, trial):
             temp=sampler_path.with_suffix('.tmp')
             temp.write_bytes(pickle.dumps(study.sampler));temp.replace(sampler_path)
+            audit=pl.DataFrame(trial_audit+trial_records(study,inp),schema_overrides={
+                'objective_value':pl.Float64,'last_intermediate_value':pl.Float64,
+                'pruned_fold':pl.String,'pruned_epoch':pl.Int64})
+            write_parquet(audit,root/'hpo_trials.parquet')
         if remaining>0:study.optimize(objective,n_trials=remaining,callbacks=[persist_sampler])
+        trial_audit.extend(trial_records(study,inp))
+        if not study.get_trials(states=(optuna.trial.TrialState.COMPLETE,)):
+            raise ValueError('Sin candidato completo para '+inp+'; revisa hpo_trials.parquet')
         for trial in study.get_trials(states=(optuna.trial.TrialState.COMPLETE,)):
             candidate_id=trial.user_attrs.get('candidate_id',f'{inp}_T{trial.number:04d}')
             candidate=SimpleNamespace(**read(root/f'{candidate_id}.json'))
@@ -197,6 +212,9 @@ def run_study(run, config_path, device, *, stage="all"):
             score_frames.append(pl.read_parquet(root/f'{candidate.id}_scores.parquet'))
             trials.append(dict(**vars(candidate),score=trial.value))
         write(run/'estado_curvas.json',dict(estado='HPO',input=inp,trials_completos=len(trials)))
+    write_parquet(pl.DataFrame(trial_audit,schema_overrides={
+        'objective_value':pl.Float64,'last_intermediate_value':pl.Float64,
+        'pruned_fold':pl.String,'pruned_epoch':pl.Int64}),root/'hpo_trials.parquet')
     scores=pl.concat(score_frames);write_parquet(scores,root/'scores.parquet')
     write(root/'candidatos.json',trials)
     for name, groups in [('finalists_budget.parquet',['budget','input']),('finalists_total.parquet',['input'])]:

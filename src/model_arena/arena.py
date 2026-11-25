@@ -101,10 +101,10 @@ class ModelArena:
                                  n_observations=self.spec.h*len(self.spec.quantiles)))
         return pd.DataFrame(rows)
 
-    def _evaluate_candidate(self, data, model_spec, candidate, run, cv, epochs):
+    def _evaluate_candidate(self, data, model_spec, candidate, run, cv, epochs, *, trial=None):
         tables = []
         root = Path(run.path)
-        for fold, end in self._folds(data, cv):
+        for fold_index, (fold, end) in enumerate(self._folds(data, cv)):
             model = self.registry.create(model_spec, self.spec)
             history = []
             def record(rows):
@@ -113,6 +113,14 @@ class ModelArena:
                                         phase="hpo", metric="pinball", scale="window_normalized",
                                         population_ref=data.signature, cutoff=str(data.axis[end-1])))
                 write_table(root / "learning_curves" / f"{candidate}_{fold}.json", pd.DataFrame(history))
+                if trial is not None:
+                    from .pruning import report_epoch
+                    values = [r["value"] for r in rows if r["split"] == "validation"
+                              and r["entity"] in data.training_ids]
+                    if not values:
+                        raise ValueError("HPO requires fixed validation losses for training entities")
+                    report_epoch(trial, float(np.mean(values)), epoch=rows[0]["epoch"],
+                                 fold_index=fold_index, epochs_per_fold=epochs, fold=fold)
             model.fit(data, end=end, epochs=epochs, fold=fold, on_epoch=record)
             table = self._scores(data, model, end, candidate, model_spec.alias, fold)
             tables.append(table)
@@ -144,6 +152,7 @@ class ModelArena:
 
     def tune(self, prepared=None, *, df=None, static_df=None, cv=None, n_trials=None, epochs=None):
         import optuna
+        from .pruning import make_pruner, trial_records
         data = self.prepare(prepared, df=df, static_df=static_df)
         cv = cv or self.spec.cv
         self._folds(data, cv)
@@ -155,7 +164,7 @@ class ModelArena:
                 raise ValueError("HPO requires a declared search adapter; use cross_validation for fixed models")
             sampler = optuna.samplers.TPESampler(seed=self.spec.training.seed+i)
             study = optuna.create_study(direction="minimize", sampler=sampler,
-                                        pruner=optuna.pruners.NopPruner(),
+                                        pruner=make_pruner(space.pruner, epochs_per_fold=epochs or self.spec.training.epochs),
                                         storage="sqlite:///"+str(root / "hpo.sqlite3"), study_name=base.alias)
             def objective(trial):
                 params = {key: trial.suggest_categorical(key, getattr(space, key))
@@ -165,19 +174,22 @@ class ModelArena:
                               dropout=space.dropout)
                 model_spec = base.model_copy(update={"params": {**base.params, **params}})
                 candidate = f"M{i:02d}_T{trial.number:04d}"
+                trial.set_user_attr("candidate_id", candidate)
                 candidates.append(dict(candidate=candidate, model=model_spec.model_dump(mode="json")))
                 write_json(root / "candidates.json", candidates)
                 table = self._evaluate_candidate(data, model_spec, candidate, run, cv,
-                                                  epochs or self.spec.training.epochs)
+                                                  epochs or self.spec.training.epochs, trial=trial)
                 scores.append(table)
                 write_table(root / "scores.json", pd.concat(scores, ignore_index=True))
                 value = float(table[table.entity.isin(data.training_ids)].value.mean())
-                trials.append(dict(candidate=candidate, input=base.alias, value=value, state="COMPLETE"))
-                write_table(root / "trials.json", pd.DataFrame(trials))
                 return value
-            study.optimize(objective, n_trials=n_trials or space.n_trials)
+            def save_trials(study, trial):
+                write_table(root / "trials.json", pd.DataFrame(trials+trial_records(study, base.alias)))
+            study.optimize(objective, n_trials=n_trials or space.n_trials, callbacks=[save_trials])
+            trials.extend(trial_records(study, base.alias))
         write_json(root / "sampler.json", {"kind": "TPESampler", "optuna_version": optuna.__version__,
-                                           "seed": self.spec.training.seed, "pruner": "NopPruner"})
+                                           "seed": self.spec.training.seed,
+                                           "pruner": space.pruner.model_dump()})
         write_json(root / "status.json", {"status": "COMPLETE"})
         self._study = StudyResult(**run.model_dump(), evidence_role=cv.evidence_role)
         self._results = Results(root)

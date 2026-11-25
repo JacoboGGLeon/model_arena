@@ -144,7 +144,7 @@ def execute(project, stage):
                         run,
                         out,
                         Config.read(project / "publication.json"),
-                        delivery_dirs=[root / "modelos"],
+                        delivery_dirs=[root / "modelos", project / "calendar"],
                         training_path=history,
                     )
         elif stage == "publish":

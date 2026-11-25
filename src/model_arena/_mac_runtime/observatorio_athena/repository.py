@@ -46,6 +46,7 @@ class Repository:
   # Metrics are already paired by account/date/fold at preparation time.
   return f'SELECT {keys},sum(accounts) AS accounts,'+','.join('sum('+m+') AS '+m for m in moments)+f' FROM {self.table("arena_summary")} WHERE {self.where(more,filters)} GROUP BY {keys} ORDER BY budget,input,candidate,target'
  def candidates(self):return f'SELECT * FROM {self.table("candidates")} WHERE {self.where()} ORDER BY input,candidate'
+ def hpo_trials(self):return f'SELECT * FROM {self.table("hpo_trials")} WHERE {self.where()} ORDER BY input,trial_number'
  def training(self,candidate,fold=None):
   more=['candidate='+literal(candidate)]+(['fold='+literal(fold)] if fold else [])
   return f'SELECT candidate,fold,epoch,train_loss,validation_loss FROM {self.table("training")} WHERE {self.where(more)} ORDER BY fold,epoch'

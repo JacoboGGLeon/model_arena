@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2
+
+- Accept Calendar Studio artifacts, artifact directories, external Parquet/CSV and DataFrame calendars through an explicit MAC adapter.
+- Freeze calendar data, source metadata and hashes in each new project; preserve existing project snapshots.
+- Publish calendar provenance as an additive dataset and expose an on-demand provenance view in Observatory.
+- Generate calendars explicitly in the Slow System notebook from deployment holiday inputs.
+- Add optional fold-local Optuna pruning with exact consecutive-epoch patience, fixed validation reports, partial-curve retention and a complete-reference safeguard.
+- Configure new ADA deployments with 15 maximum HPO epochs, patience 4 and 15 COMPLETE/PRUNED attempts per input; keep 75 final epochs.
+- Publish every trial state and parameters in an additive hpo_trials dataset; never rank pruned candidates as complete three-fold candidates.
+- Preserve model mathematics, selection, alerting rules and Engine 2/3 schemas.
+
 ## 0.1.1
 
 - Store per-account epoch losses and per-fit histories as atomic Zstandard Parquet, preserving Float64.

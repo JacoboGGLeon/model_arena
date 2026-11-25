@@ -9,7 +9,7 @@ def enqueue_interrupted(study, inp):
     occupied = {
         t.user_attrs.get("resume_candidate_id", t.user_attrs.get("candidate_id"))
         for t in all_trials
-        if t.state in (State.WAITING, State.COMPLETE)
+        if t.state in (State.WAITING, State.COMPLETE, State.PRUNED)
     }
     for trial in reversed(all_trials):
         retry = trial.state == State.RUNNING or (

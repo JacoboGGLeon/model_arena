@@ -39,3 +39,8 @@ SCHEMAS['training_targets']=schema([('candidate',S),('fold',S),('target',S),('ep
 SCHEMAS['training_learning']=schema([('candidate',S),('fold',S),('target',S),('epoch',I),('split',S),('loss',D)])
 
 SCHEMAS['training_entities']=schema([(k,S) for k in ['account_id','currency','cohort','taxonomy','candidate','fold','target','split']]+[('budget',I),('epoch',I),('loss',D),('n_observations',I)])
+
+# Additive provenance dataset; existing publications and MAC schemas are unchanged.
+SCHEMAS['calendar_provenance']=schema([(k,S) for k in ['generator','generator_version','profile','view','start_date','end_date','calendar_sha256','metadata_json']]+[('feature_count',I),('rows',I)])
+
+SCHEMAS['hpo_trials']=schema([(k,S) for k in ['input','candidate','state','pruned_fold','parameters_json']]+[('trial_number',I),('pruned_epoch',I),('objective_value',D),('last_intermediate_value',D)])

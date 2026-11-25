@@ -135,11 +135,13 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
  report=json.loads((root/'resultados_x0.json').read_text())
  if report.get('version')!='0.11.0':raise ValueError('Adaptador para corrida Arena 0.11.0; no convierte silenciosamente otro protocolo')
  source=run/'source/engine1.parquet';definitions=json.loads((root/'candidatos.json').read_text())
- paths=[*detail_files(root/'loss_entities'),source,root/'resultados_x0.json',root/'inventory.parquet',root/'candidatos.json',*sorted((root/'predicciones').glob('*.parquet')),*sorted(root.glob('winners_*.parquet'))]
+ calendar_manifest=run.parent/'calendar/provenance.json'
+ calendar_provenance=json.loads(calendar_manifest.read_text()) if calendar_manifest.is_file() else None
+ paths=[*([calendar_manifest] if calendar_manifest.is_file() else []),*detail_files(root/'loss_entities'),source,root/'resultados_x0.json',root/'inventory.parquet',root/'candidatos.json',*sorted((root/'predicciones').glob('*.parquet')),*sorted(root.glob('winners_*.parquet'))]
  if training_path:paths.append(Path(training_path).resolve())
  raw_roots=list(dict.fromkeys([p for p in [run/'engine2',run/'engine3',root/'engine2',root/'engine3',*[Path(p).expanduser().resolve() for p in delivery_dirs]] if p.is_dir()]))
  raw_files=[(i,p,base) for i,base in enumerate(raw_roots) for p in sorted(base.rglob('*')) if p.is_file()]
- mac3_metadata=[p for pattern in ('inventory.parquet','scores.parquet','candidatos.json','resultados_x0.json','winners_*.parquet','identidad.json') for p in sorted(root.glob(pattern))]
+ mac3_metadata=[p for pattern in ('inventory.parquet','scores.parquet','candidatos.json','resultados_x0.json','winners_*.parquet','identidad.json','hpo_trials.parquet') for p in sorted(root.glob(pattern))]
  raw_files.extend((len(raw_roots),p,root) for p in mac3_metadata)
  paths.extend(p for _,p,_ in raw_files)
  signature=source_signature(paths)
@@ -160,6 +162,9 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
  out.mkdir(parents=True,exist_ok=True)
  pub=uuid.uuid4().hex;run_id=hashlib.sha256(str(run).encode()).hexdigest()[:12]+'_'+run.name
  writer=Writer(out,run_id,pub,config.shards)
+ if calendar_provenance:
+  cp=calendar_provenance
+  writer.write('calendar_provenance',[dict(generator=cp['generator'],generator_version=cp.get('generator_version'),profile=cp['profile'],view=cp.get('view'),start_date=cp['start'],end_date=cp['end'],calendar_sha256=cp['calendar_sha256'],feature_count=cp['feature_count'],rows=cp['rows'],metadata_json=json.dumps(cp,ensure_ascii=False,sort_keys=True))])
  stored=pl.read_parquet(root/'inventory.parquet')
  frozen={r['account_id']:r for r in stored.to_dicts()}
  assignments={r['account_id']:r for r in pl.read_parquet(root/'winners_FUTURO.parquet').to_dicts()}
@@ -195,6 +200,8 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
  inventory=pl.DataFrame(inv,infer_schema_length=None)
  writer.write('inventory',inv)
  writer.write('candidates',[dict(candidate=d['id'],input=d['inputs'],selection_score=d.get('score'),parameters_json=json.dumps(d,ensure_ascii=False,sort_keys=True)) for d in definitions])
+ if (root/'hpo_trials.parquet').is_file():
+  writer.write('hpo_trials',pl.read_parquet(root/'hpo_trials.parquet'))
  cv={};population_hashes={}
  for index,d in enumerate(definitions):
   progress(f"Métricas pareadas {index+1}/{len(definitions)} · {d['id']}")
@@ -292,6 +299,7 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
    writer.write('arena_summary',summary)
  writer.flush()
  manifest=dict(status='PREPARED',version='0.12.1',run_id=run_id,run_label=run.name,publication_id=pub,source_signature=signature,preparation_signature=preparation_signature,code_hashes=code_hashes,shards=config.shards,files=writer.entries,raw_deliveries=raw,
+  calendar_provenance=calendar_provenance,
   datasets={name:dict(columns=[dict(name=f.name,type=athena_type(f.type)) for f in sc],rows=sum(x['rows'] for x in writer.entries if x['dataset']==name)) for name,sc in SCHEMAS.items() if name!='publications'},
   protocol='F1–F3 usados en selección; no Test independiente. Layout Engine2 preservado, selección MAC3 explícita. Engine3 port literal MAC2 separado de diagnóstico MAC3.',
   population_hashes=population_hashes,engine3_reference_sha256=REFERENCE_SHA256,training_available=bool(training_path),delivery_load_date=str(load_date),created_at=datetime.now(timezone.utc).isoformat())

@@ -103,6 +103,20 @@ def render_app(config,athena):
   st.rerun()
  with st.sidebar.expander('Procedencia'):
   st.caption('Publicación: '+pub);st.caption(selected.protocol);st.caption('Versión del monitor: Streamlit Athena 0.12.1')
+  if st.button('Ver calendario de esta publicación',key='calendar_provenance'):
+   try:
+    calendar_info=data(f'SELECT * FROM {repo.table("calendar_provenance")} WHERE {repo.where()}')
+    if calendar_info.empty:st.caption('La publicación no incluye procedencia del calendario.')
+    else:
+     details=calendar_info.iloc[0]
+     st.caption('Generador: '+str(details.generator)+' · '+str(details.generator_version))
+     st.caption('Perfil: '+str(details.profile)+' · '+str(details.feature_count)+' variables')
+     st.caption(str(details.start_date)+' → '+str(details.end_date))
+     st.caption('SHA-256: '+str(details.calendar_sha256))
+     st.json(json.loads(details.metadata_json))
+   except Exception as exc:
+    if 'TABLE_NOT_FOUND' in str(exc):st.caption('Esta publicación anterior no incluye procedencia del calendario.')
+    else:st.warning('No se pudo consultar la procedencia del calendario: '+str(exc))
  dimensions=data(f'SELECT currency,taxonomy,budget,cohort,count(*) AS accounts FROM {repo.table("inventory")} WHERE {repo.where()} GROUP BY currency,taxonomy,budget,cohort')
  currencies=sorted(dimensions.currency.dropna().unique());taxonomies=sorted(dimensions.taxonomy.dropna().unique());budgets=sorted(int(x) for x in dimensions.budget.dropna().unique())
  with st.expander('Descargar salidas MAC publicadas'):
@@ -236,6 +250,18 @@ def render_app(config,athena):
    if fold=='FUTURO':st.caption('FUTURO usa toda la historia para entrenar: sólo hay curva de entrenamiento; no se inventa validación sin observado.')
   with st.expander('Configuraciones de todos los candidatos'):
    configs=data(repo.candidates());st.dataframe(configs,hide_index=True,use_container_width=True)
+  with st.expander('Intentos HPO · completados y podados'):
+   if st.button('Ver estados de todos los trials'):
+    try:
+     audit=data(repo.hpo_trials())
+     if audit.empty:st.info('Esta publicación no incluye el registro de estados de HPO.')
+     else:
+      import plotly.express as px
+      counts=audit.groupby(['input','state']).size().reset_index(name='trials')
+      st.plotly_chart(px.bar(counts,x='input',y='trials',color='state',barmode='stack',labels={'input':'Input','trials':'Intentos','state':'Estado'}),use_container_width=True)
+      st.dataframe(audit,hide_index=True,use_container_width=True)
+      st.caption('PRUNED conserva las loss parciales y parámetros; sólo COMPLETE compite por ganador con F1–F3 completos. La última loss intermedia no es el score final.')
+    except Exception as exc:st.warning('No se pudo leer el registro de HPO de esta publicación: '+str(exc))
 
  else:
   from .alerts_view import render_alerts
