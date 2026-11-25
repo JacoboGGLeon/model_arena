@@ -6,10 +6,11 @@ def assignments(scores, inventory, candidates, prior_folds):
     eligible = scores.filter(pl.col('fold').is_in(prior_folds))
     if eligible.is_empty():
         return inventory.with_columns(pl.lit(candidates[0].id).alias('candidate'),pl.lit('INITIAL_CONFIG').alias('selection_source'))
-    finalists = (eligible.group_by('budget','input','candidate').agg(pl.col('score').mean())
-        .sort('budget','input','score','candidate').unique(['budget','input'],keep='first'))
-    global_finalists = (eligible.group_by('input','candidate').agg(pl.col('score').mean())
-        .sort('input','score','candidate').unique('input',keep='first'))
+    dimensions = ['family','input'] if 'family' in eligible.columns and eligible['family'].n_unique()>1 else ['input']
+    finalists = (eligible.group_by('budget',*dimensions,'candidate').agg(pl.col('score').mean())
+        .sort('budget',*dimensions,'score','candidate').unique(['budget',*dimensions],keep='first'))
+    global_finalists = (eligible.group_by(*dimensions,'candidate').agg(pl.col('score').mean())
+        .sort(*dimensions,'score','candidate').unique(dimensions,keep='first'))
     result = []
     for row in inventory.to_dicts():
         ids = finalists.filter(pl.col('budget')==row['budget'])['candidate'].to_list()

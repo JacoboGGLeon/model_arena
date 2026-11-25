@@ -12,7 +12,7 @@ Los objetivos tienen redes independientes dentro del candidato; se evalúan conj
 
 HPO se presupuesta por familia/input, con espacios específicos. NLinear/DLinear sólo aceptan X0 si upstream no admite exógenas. TiDE/NHITS permiten historia de calendario y calendario futuro. La parte histórica del canal de exógenas futuras se fija en cero, excluyéndola explícitamente; el calendario pasado, cuando se solicita, entra por hist_exog. Esto preserva la diferencia X1/X2/X3 sin usar observados futuros.
 
-Sólo candidatos completos participan en la selección común. Las métricas permanecen por objetivo, cuenta y budget. El ganador operativo sigue siendo una configuración por serie. Los proyectos anteriores no cambian. Se congela la versión upstream y el hash del código de cada arquitectura en los checkpoints para detectar incompatibilidades.
+Sólo candidatos completos participan en la selección común. MAC conserva un finalista por familia/input/budget antes de seleccionar por serie; cuando el score no incluye familias múltiples, se conserva la ruta histórica por input. Las métricas permanecen por objetivo, cuenta y budget. El ganador operativo sigue siendo una configuración por serie. Los proyectos anteriores no cambian. Se congela la versión upstream y el hash del código de cada arquitectura en los checkpoints para detectar incompatibilidades.
 
 ## Verificación requerida
 

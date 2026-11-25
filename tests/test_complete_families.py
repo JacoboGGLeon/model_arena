@@ -52,3 +52,17 @@ def test_four_families_hpo_select_save_zero_shot(panel,spec,tmp_path):
     loaded=ModelArena.load(artifact)
     after=loaded.predict(df=df,static_df=static)
     np.testing.assert_allclose(before.value,after.value,rtol=1e-6)
+
+
+def test_mac_keeps_family_finalists_before_series_selection():
+    from types import SimpleNamespace
+    import polars as pl
+    from model_arena.winner_selection import assignments
+    rows=[]
+    for candidate,family,values in [('A','tide',[.1,.9]),('B','nhits',[.9,.1])]:
+        for account,value in zip(['one','two'],values):
+            rows.append(dict(candidate=candidate,family=family,input='X0',budget=1,
+                account_id=account,currency='USD',fold='F1',score=value))
+    inventory=pl.DataFrame([dict(account_id=a,budget=1,currency='USD',cohort='seen') for a in ['one','two']])
+    chosen=assignments(pl.DataFrame(rows),inventory,[SimpleNamespace(id=k) for k in ['A','B']],['F1'])
+    assert chosen['candidate'].to_list()==['A','B']

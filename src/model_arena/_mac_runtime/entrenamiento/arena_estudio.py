@@ -78,7 +78,8 @@ def loss_rows(frame, candidate, inventory):
         .with_columns(pl.max_horizontal(tau*error,(tau-1)*error).alias('pinball'))
         .group_by('account_id','currency','target','fold').agg(pl.col('pinball').mean().alias('score'))
         .join(inventory.select('account_id','budget','cohort'),on='account_id',validate='m:1')
-        .with_columns(pl.lit(candidate.id).alias('candidate'),pl.lit(candidate.inputs).alias('input')))
+        .with_columns(pl.lit(candidate.id).alias('candidate'),pl.lit(candidate.inputs).alias('input'),
+            pl.lit(getattr(candidate,'family','encoder_decoder')).alias('family')))
 
 
 def persist_history(root, candidate, fold, rows):
@@ -241,7 +242,7 @@ def run_study(run, config_path, device, *, stage="all"):
         'pruned_fold':pl.String,'pruned_epoch':pl.Int64}),root/'hpo_trials.parquet')
     scores=pl.concat(score_frames);write_parquet(scores,root/'scores.parquet')
     write(root/'candidatos.json',trials)
-    for name, groups in [('finalists_budget.parquet',['budget','input']),('finalists_total.parquet',['input'])]:
+    for name, groups in [('finalists_budget.parquet',['budget','family','input']),('finalists_total.parquet',['family','input'])]:
         finalists=scores.group_by(*groups,'candidate').agg(pl.col('score').mean()).sort(*groups,'score','candidate').unique(groups,keep='first')
         write_parquet(finalists,root/name)
     if stage == "tune":
