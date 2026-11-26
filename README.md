@@ -2,10 +2,10 @@
 
 Explicit forecasting competition and observable learning histories.
 
-Version **0.1.7**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.7"`.
+Version **0.1.8**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.8"`.
 Source: https://github.com/JacoboGGLeon/model_arena · PyPI: https://pypi.org/project/model-arena-sdk/.
 
-The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. The storage profile was exercised end-to-end in ADA, including S3/Athena publication; automated tests use synthetic data.
+The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. Previous releases exercised the storage profile end-to-end in ADA, including S3/Athena publication. The 0.1.8 MAD profile is tested locally with synthetic data.
 
 ```python
 from model_arena import ModelArena
@@ -30,7 +30,7 @@ publication = arena.publish(release, destination='publications')
 The default installation includes the complete forecasting and monitoring runtime. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
 
 ```bash
-python -m pip install "model-arena-sdk==0.1.7"
+python -m pip install "model-arena-sdk==0.1.8"
 ```
 
 In ADA, keep the existing Artifactory indexes and approved CUDA-compatible PyTorch installation. No package index or CUDA build is forced by the SDK. Default installation includes PyTorch and the dashboard dependencies; imports remain lazy and reading results does not initialize CUDA. Existing extras remain available for compatibility.
@@ -189,3 +189,9 @@ The ADA bundle enables this mode with TiDE, NHITS, NLinear, DLinear and NBEATS a
 alone for 50 trials, or both for 100. Use `project.plan()` to inspect the resolved
 schedule. An existing configuration with no `input_search` retains `per_input`.
 To switch modes, create a new project. See [ADR 0010](docs/adr/0010-shared-input-hpo.md).
+
+## MAC point forecasts with MAD envelopes (0.1.8)
+
+The ADA profile runs NLinear, DLinear and RLinear on X0 for saldo and variacion. Each independent TPE study has 25 trials with a per-fold validation patience of three epochs. Point forecasts use normalized MAE. For each forecast origin, MAD uses the 19 adjacent balance changes across the 20 most recent closes. At H=1 the saldo band is anchored to the previous observed close. At H>1 it is anchored to the previous model-predicted close. The variacion band is symmetric around zero. The model point can fall outside the reference band.
+
+Engine 3 keeps the original MAC 2 rules and confirmation step. The Athena event table is populated from those decisions for MAD runs. Engine 2/3 layouts are preserved. MAD limits are robust reference bounds without a nominal 95% coverage claim. Existing percentile-mode projects retain their protocol; create a new ADA project for the MAD experiment.

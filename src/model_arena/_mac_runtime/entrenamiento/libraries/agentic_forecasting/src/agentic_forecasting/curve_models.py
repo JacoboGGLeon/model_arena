@@ -5,6 +5,7 @@ import torch
 from torch import nn
 from types import SimpleNamespace
 
+from model_arena.mad import mad_envelopes, point_forecast
 from model_arena.models.engine import predict_batches, train_quantiles
 from model_arena.models.tft import Network, TFTParameters
 from agentic_forecasting.data import batch
@@ -49,6 +50,7 @@ class CurveTFT(nn.Module):
                 family=candidate.family, targets=targets, window=spec.window,
                 h=spec.horizon, historical=past, future=future,
                 parameters=CompleteParameters.model_validate(candidate.family_params),
+                point=point_forecast(candidate),
             )
         else:
             params = TFTParameters(
@@ -93,8 +95,10 @@ def make_batch(series, refs, spec, candidate, device, calendar, observed):
     for key in ("history_calendar", "future_calendar"):
         if key in features:
             features[key] = torch.as_tensor(features[key], dtype=torch.float32, device=device)
-    history = np.stack([series[i].values[end-spec.horizon:end] for i, end in refs])
-    anchor_native = None if observed else persistence(history, spec.horizon)
+    anchor_native = None
+    if not observed and not point_forecast(candidate):
+        history = np.stack([series[i].values[end-spec.horizon:end] for i, end in refs])
+        anchor_native = persistence(history, spec.horizon)
     scale = features['scales'][:, None, :, None]
 
     truth = None
@@ -142,7 +146,8 @@ def fit_curves(series, end, spec, candidate, device, calendar, config, on_epoch=
         print(f'Época {epoch}/{spec.epochs} · pérdida {loss:.6g}', flush=True)
 
     train_quantiles(model, optimizer, schedule, epochs=spec.epochs, batch_size=spec.batch_size,
-                    quantiles=CURVE_PROBS, batch=batch_training, on_epoch=record, accumulate_double=False)
+                    quantiles=CURVE_PROBS, batch=batch_training, on_epoch=record, accumulate_double=False,
+                    point=point_forecast(candidate))
     return model
 
 
@@ -151,5 +156,14 @@ def predict_curves(model, series, end, spec, candidate, device, calendar):
         features, native, _ = make_batch(series, refs, spec, candidate, device, calendar, False)
         return (features,), features["scales"].cpu().numpy()[:, None, :, None], native
 
-    return predict_batches(model, [(i, end) for i in range(len(series))],
-                           batch_size=spec.batch_size, batch=batch_prediction)
+    values, baseline = predict_batches(model, [(i, end) for i in range(len(series))],
+                                       batch_size=spec.batch_size, batch=batch_prediction)
+    if not point_forecast(candidate):
+        return values, baseline
+    interval = candidate.interval
+    history = np.stack([s.values[max(0, end - interval['window']):end, 0] for s in series])
+    baseline = np.zeros_like(values)
+    if candidate.target == "saldo":
+        baseline[:, :, 0, 0] = history[:, -1, None]
+    arguments = dict(target=candidate.target, window=interval['window'], multiplier=interval['multiplier'])
+    return mad_envelopes(values, history, **arguments), mad_envelopes(baseline, history, **arguments)

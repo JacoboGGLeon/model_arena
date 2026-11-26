@@ -12,7 +12,7 @@ def pinball_tensor(error, quantiles):
 
 
 def train_quantiles(network, optimizer, schedule, *, epochs, batch_size, quantiles, batch, on_epoch,
-                    accumulate_double=True):
+                    accumulate_double=True, point=False):
     """Fit a network using the profile's schedule and normalized input/target adapter."""
     for epoch in range(1, epochs + 1):
         network.train()
@@ -23,7 +23,8 @@ def train_quantiles(network, optimizer, schedule, *, epochs, batch_size, quantil
             batch_refs = refs[start:start + batch_size]
             inputs, truth = batch(batch_refs)
             optimizer.zero_grad()
-            elements = pinball_tensor(truth.unsqueeze(-1) - network(*inputs), quantiles)
+            error = truth.unsqueeze(-1) - network(*inputs)
+            elements = error.abs() if point else pinball_tensor(error, quantiles)
             loss = elements.mean()
             if not torch.isfinite(loss):
                 raise ValueError("Non-finite training loss")

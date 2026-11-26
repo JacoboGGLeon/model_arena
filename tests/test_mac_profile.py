@@ -13,7 +13,7 @@ from model_arena.storage import digest
 
 
 @pytest.mark.train
-@pytest.mark.parametrize("calendar_kind", ["csv", "parquet", "artifact", "families", "dates_only", "pooled"])
+@pytest.mark.parametrize("calendar_kind", ["csv", "parquet", "artifact", "families", "dates_only", "pooled", "mad"])
 def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypatch, calendar_kind):
     # Subprocesses inherit the CPU torch installation used by this test session.
     import torch
@@ -129,6 +129,14 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
         cfg["curvas"].update(inputs=["X0"], final_epochs=2)
     if calendar_kind == "families":
         cfg['curvas'].update(families=dict(encoder_decoder=1,tide=1,nhits=1,nlinear=1,dlinear=1,nbeats=1))
+    if calendar_kind == "mad":
+        cfg["curvas"].update(
+            families={"nlinear": 1, "dlinear": 1, "rlinear": 1},
+            inputs=["X0"], final_epochs=2,
+            interval={"method": "mad", "window": 4},
+            policies={"selection_metric": "scaled_mae"},
+            pruner={"kind": "patience", "patience": 3},
+        )
     if calendar_kind == "pooled":
         del cfg["curvas"]["trials"]
         cfg["curvas"].update(
@@ -148,6 +156,9 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
         device="cpu",
     )
     assert project.calendar_provenance()["feature_count"] == width
+    if calendar_kind == "mad":
+        plan = project.plan()
+        assert len(plan["studies"]) == 6 and plan["hpo_fits"] == 18
     if calendar_kind == "parquet":
         assert project.plan()["final_epochs"] == 2
         assert project.plan()["hpo_fits"] == 12
@@ -210,6 +221,15 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
     project.postprocess()
     assert before == {str(p): digest(p) for p in weights}
     manifest = json.loads((project.path / "release/publication.json").read_text())
+    if calendar_kind == "mad":
+        assert audit.height == 6
+        assert manifest["interval"]["method"] == "mad"
+        assert manifest["view"]["quantiles"] == []
+        assert manifest["view"]["interval_method"] == "mad"
+        variation = frame.filter(pl.col("target") == "variacion").pivot(
+            on="component", index=["account_id", "date", "method"], values="forecast")
+        np.testing.assert_allclose(variation["Q2.5"].to_numpy(), -variation["Q97.5"].to_numpy())
+        assert manifest["datasets"]["events"]["rows"] > 0
     assert len(manifest["datasets"]["engine2"]["columns"]) == 15
     assert len(manifest["datasets"]["engine3"]["columns"]) == 22
     assert manifest["datasets"]["training_learning"]["rows"] > 0

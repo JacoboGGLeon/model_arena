@@ -48,8 +48,11 @@ class MacProject:
         from ..contracts import PruningSpec
 
         PruningSpec.model_validate(training["curvas"].get("pruner") or {})
+        from ..mad import MAD_FAMILIES, MacIntervalSpec
+        from ..models.complete import FAMILIES
+
         families=training['curvas'].get('families',{})
-        if ('families' in training['curvas'] and not families) or set(families)-{'encoder_decoder','tide','nhits','nlinear','dlinear','nbeats'} or any(not isinstance(n,int) or n<1 for n in families.values()):
+        if ('families' in training['curvas'] and not families) or set(families)-{'encoder_decoder', *FAMILIES} or any(not isinstance(n,int) or n<1 for n in families.values()):
             raise ValueError('Invalid family names or per-family trial budgets')
         kinds = training["curvas"].get("encoder_kinds", ["tft_compact"])
         from ..contracts import SearchSpec
@@ -76,6 +79,15 @@ class MacProject:
             raise ValueError("final_epochs debe ser un entero positivo")
         curves["input_search"] = InputSearchSpec.model_validate(curves.get("input_search", {})).model_dump()
         curves["policies"] = MacPolicy.model_validate(curves.get("policies", {})).model_dump(mode="json")
+        interval = MacIntervalSpec.model_validate(curves.get("interval", {}))
+        if interval.method == "mad":
+            if not families or set(families) - set(MAD_FAMILIES):
+                raise ValueError("MAD point forecasts require NLinear, DLinear or RLinear")
+            if interval.window > training["model"]["window"]:
+                raise ValueError("MAD reference window cannot exceed the training lookback")
+            if curves["policies"]["selection_metric"] != "scaled_mae":
+                raise ValueError("MAD point forecasts require selection_metric=scaled_mae")
+        curves["interval"] = interval.model_dump()
         study_plan(curves, training["model"]["epochs"])
         check_space(path, stage="crear proyecto")
         path.mkdir(parents=True)
@@ -152,6 +164,7 @@ class MacProject:
         studies = study_plan(training["curvas"], training["model"]["epochs"])
         return dict(
             studies=studies,
+            interval=training["curvas"].get("interval", {"method": "percentiles"}),
             input_search=InputSearchSpec.model_validate(training["curvas"].get("input_search", {})).model_dump(),
             candidate_configurations=sum(item["trials"] for item in studies),
             hpo_fits=sum(item["trials"] * item["folds"] for item in studies),

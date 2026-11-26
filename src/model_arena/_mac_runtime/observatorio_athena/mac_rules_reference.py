@@ -84,6 +84,11 @@ def _severity(percent, *, atypical):
     )
 
 
+def confirmed_variation_keys(variation, keys):
+    """The original confirmation step retains only the variation identity."""
+    return variation.filter(pl.col("niveles_alerta") != "OK").select(keys)
+
+
 @dataclass(frozen=True)
 class MacEvaluation:
     training_balance: pl.DataFrame
@@ -140,8 +145,7 @@ class OriginalMacRules:
             # The original selects only identity from variation before joining;
             # all values in the official record come from the balance row.
             confirmed = (
-                var.filter(pl.col("niveles_alerta") != "OK")
-                .select(keys)
+                confirmed_variation_keys(var, keys)
                 .join(
                     saldo.filter(pl.col("niveles_alerta") != "OK"), on=keys, how="inner"
                 )

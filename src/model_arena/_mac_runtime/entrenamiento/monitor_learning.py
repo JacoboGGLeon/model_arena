@@ -1,6 +1,7 @@
 """Post-epoch fixed-set loss measurement. No optimizer or checkpoint selection."""
 import numpy as np
 import torch
+from model_arena.mad import point_forecast
 from model_arena.disk import check_space
 from model_arena.loss_store import write_parquet
 from agentic_forecasting.curve_models import make_batch,CURVE_PROBS
@@ -16,6 +17,8 @@ def build_monitor(training,full,end,spec,candidate,device,calendar,fold,cfg,deta
     train_refs=list(zip(selected,origins.tolist()))
     validation_refs=[(i,end) for i in selected] if fold!='FUTURO' else []
     epoch_counter=[0]
+    point = point_forecast(candidate)
+    outputs = 1 if point else len(CURVE_PROBS)
     if detail_path is not None:
         from pathlib import Path
         detail_path=Path(detail_path)
@@ -38,7 +41,7 @@ def build_monitor(training,full,end,spec,candidate,device,calendar,fold,cfg,deta
                     features,_,truth=make_batch(series,refs[start:start+spec.batch_size],spec,candidate,device,calendar,True)
                     residual=truth.unsqueeze(-1)-model(features)
                     tau=truth.new_tensor(CURVE_PROBS)
-                    elements=torch.maximum(tau*residual,(tau-1)*residual).double()
+                    elements=(residual.abs() if point else torch.maximum(tau*residual,(tau-1)*residual)).double()
                     total+=elements.sum(dim=(0,1,3)).cpu().numpy()
                     individual=elements.mean(dim=(1,3)).cpu().numpy()
                     for (index,origin),values in zip(refs[start:start+spec.batch_size],individual):
@@ -47,8 +50,8 @@ def build_monitor(training,full,end,spec,candidate,device,calendar,fold,cfg,deta
                             details.append(dict(account_id=item.id,currency=item.currency,budget=item.budget,
                                 cohort=item.cohort,taxonomy='cuentas_entrenamiento',candidate=candidate.id,
                                 fold=fold,target=target,split=split,epoch=epoch_counter[0],loss=float(value),
-                                n_observations=spec.horizon*len(CURVE_PROBS)))
-                    count+=len(truth)*spec.horizon*len(CURVE_PROBS)
+                                n_observations=spec.horizon*outputs))
+                    count+=len(truth)*spec.horizon*outputs
             return dict(zip(targets,total/count if count else [None]*len(targets)))
         try:
             train=loss(training,train_refs,'train');validation=loss(full,validation_refs,'validation')

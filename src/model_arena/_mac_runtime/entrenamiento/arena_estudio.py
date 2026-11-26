@@ -239,6 +239,9 @@ def run_study(run, config_path, device, *, stage="all"):
                 candidate.input_features = cfg['input_specs'][inp]
                 candidate.transform = cfg['policies']['transform']
                 candidate.selection_metric = cfg['policies']['selection_metric']
+            if cfg.get("interval", {}).get("method") == "mad":
+                candidate.interval = cfg["interval"]
+                candidate.selection_metric = "scaled_mae"
             if pooled_inputs:
                 candidate.id = trial.user_attrs['candidate_id']
             elif 'families' in cfg and family=='encoder_decoder' and 'resume_candidate_id' not in trial.user_attrs:
@@ -327,7 +330,7 @@ def run_study(run, config_path, device, *, stage="all"):
         records.append(dict(modelo='Winner',fold=fold,origen=dates[end-1],desde=dates[end],hasta=dates[end+spec.horizon-1],predicciones=str(output.relative_to(root))))
         prior.append(fold)
     training_history=combine_history(root)
-    report=dict(version='0.11.0',training_history=str(training_history.relative_to(root)),loss_function='pinball normalizado; tres cuantiles y dos objetivos',validation_loss_available=False,corrida=run.name,horizonte=spec.horizon,
+    report=dict(version='0.11.0',training_history=str(training_history.relative_to(root)),loss_function=('MAE normalizado puntual' if config['curvas'].get('interval', {}).get('method') == 'mad' else 'pinball normalizado; tres cuantiles y dos objetivos'),validation_loss_available=False,corrida=run.name,horizonte=spec.horizon,
         muestra=dict(entrenadas=len(seen),atipicas_zero_shot=len(atypical)),ajustes=records[:-1],futuro=records[-1],
         seleccion=dict(mejor_tft='Winner',referencia_recomendada_en_esta_prueba='Winner'),config=config)
     write(root/RESULT,report)

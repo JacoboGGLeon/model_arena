@@ -12,25 +12,8 @@ from model_arena.presentation import publication_view, winner_rows
 from .layout_export import write_published_csv
 from .theme import CSS
 from .analysis import comparisons,score
-from .historical_sigma import SIGMA_BANDS
+from .history_bands import CONTEXT, MAD_MULTIPLIER, MAD_SCALE, VIEWS, WINDOW, fold_points, history_bands_figure, intervals
 from .alert_taxonomy import SEVERITY_COLORS
-
-
-def history_figure(history,bands=True):
- fig=make_subplots(rows=2,cols=1,shared_xaxes=True,subplot_titles=['Saldo','Variación'],vertical_spacing=.15)
- for row,target,color in [(1,'saldo','#1464a5'),(2,'variacion','#02a5a5')]:
-  g=history[history.target==target].sort_values('date')
-  if bands:
-   seen=set()
-   for low,high,label,shade,alpha in SIGMA_BANDS:
-    lo=g.sigma_center+low*g.sigma_std;hi=g.sigma_center+high*g.sigma_std
-    fill='rgba('+','.join(str(int(shade[i:i+2],16)) for i in (1,3,5))+','+str(alpha)+')'
-    fig.add_trace(go.Scatter(x=g.date,y=lo,line={'width':0},showlegend=False,hoverinfo='skip',connectgaps=False),row=row,col=1)
-    fig.add_trace(go.Scatter(x=g.date,y=hi,line={'width':0},fill='tonexty',fillcolor=fill,name='Referencia '+label,showlegend=row==1 and label not in seen,connectgaps=False),row=row,col=1);seen.add(label)
-  fig.add_trace(go.Scatter(x=g.date,y=g.observed,name=target.capitalize(),line={'color':color},customdata=g[['zscore','sigma_reference_n','zscore_status']].to_numpy(),hovertemplate='%{x}<br>Observado %{y:,.2f}<br>Z %{customdata[0]} · n %{customdata[1]}<br>%{customdata[2]}<extra></extra>'),row=row,col=1)
-  fig.add_trace(go.Scatter(x=g.date,y=g.sigma_center,name='Media anterior',line={'color':'#8091a5','dash':'dot'},showlegend=row==1),row=row,col=1)
- fig.update_layout(template='plotly_white',height=680,hovermode='x unified',legend={'orientation':'h','y':-.12})
- return fig
 
 
 def alert_figure(history,daily,events,families,bands):
@@ -98,7 +81,6 @@ def render_app(config,athena):
  initial=options.index(config.initial_publication_id) if config.initial_publication_id in options else 0
  pub=st.sidebar.selectbox('Corrida publicada',options,index=initial,format_func=lambda p:pubs.loc[pubs.publication_id==p,'run_id'].iloc[0][13:]+' · '+pd.to_datetime(pubs.loc[pubs.publication_id==p,'published_at'].iloc[0],utc=True).tz_convert(config.display_timezone).strftime('%Y-%m-%d %H:%M'))
  selected=pubs[pubs.publication_id==pub].iloc[0]
- repo=Repository(config,selected.run_id,pub,int(selected.shards))
  @st.cache_data(ttl=300,max_entries=32,show_spinner=False)
  def read_view(uri,cache_tag,_client):
   return _client.publication_manifest(uri).get('view')
@@ -108,6 +90,7 @@ def render_app(config,athena):
   view=read_view(selected.manifest_uri,tag,athena) or view
  except Exception:
   st.sidebar.caption('Se usan las etiquetas MAC de compatibilidad para esta publicación.')
+ repo=Repository(config,selected.run_id,pub,int(selected.shards),mac2_events=view.get('interval_method')=='mad')
  targets={item['id']:item for item in view['targets']}
  page=st.sidebar.radio('Monitor',['Historia y budgets','Model Arena','Alertamientos'])
  if st.sidebar.button('Actualizar resultados'):
@@ -116,7 +99,7 @@ def render_app(config,athena):
    if k.startswith('query_'):del st.session_state[k]
   st.rerun()
  with st.sidebar.expander('Procedencia'):
-  st.caption('Publicación: '+pub);st.caption(selected.protocol);st.caption('Versión del monitor: Streamlit Athena 0.12.1')
+  st.caption('Publicación: '+pub);st.caption(selected.protocol);st.caption('Versión del monitor: Model Arena 0.1.8')
   if st.button('Ver calendario de esta publicación',key='calendar_provenance'):
    try:
     calendar_info=data(f'SELECT * FROM {repo.table("calendar_provenance")} WHERE {repo.where()}')
@@ -184,9 +167,38 @@ def render_app(config,athena):
   accounts=paged(repo.inventory(filters,sort,desc),'history')
   if accounts.empty:return
   account=st.selectbox('Serie de la página',accounts.account_id.tolist())
-  history=data(repo.history(account));bands=st.checkbox('Mostrar bandas dinámicas ±1σ / ±2σ / ±3σ',True)
-  st.plotly_chart(history_figure(history,bands),use_container_width=True)
-  st.caption('Referencia acumulada de valores anteriores; mínimo cinco observaciones y sigma poblacional. Verde ±1σ, amarillo 1–2σ y rojo 2–3σ. Una referencia constante se muestra como no disponible.')
+  history=data(repo.history(account))
+  if history.empty or not history['target'].eq('saldo').any():
+   st.info('Sin historia de saldo publicada para esta cuenta.')
+   return
+  st.subheader('Historia de saldo · '+account)
+  view=st.radio('Vista de intervalos',VIEWS,index=2,horizontal=True,key='history_interval_view')
+  window_col, history_col, estimate_col=st.columns(3)
+  window=int(window_col.number_input('Cierres previos para calcular intervalos',min_value=2,value=WINDOW,step=1))
+  full_history=history_col.checkbox('Ver historia completa')
+  show_estimates=estimate_col.checkbox('Mostrar Q50 publicado en F1–F3')
+  reference=intervals(history,window)
+  try:
+   daily=data(repo.daily(account))
+  except Exception as exc:
+   st.warning('No se pudieron consultar los cortes publicados de la cuenta. '+str(exc))
+   daily=pd.DataFrame()
+  points=fold_points(daily)
+  st.plotly_chart(history_bands_figure(reference,points,view,full_history=full_history,
+                                      show_estimates=show_estimates),use_container_width=True)
+  if view in ('Percentiles','Superposición'):
+   st.caption(f'Percentiles móviles Q2.5, Q50 y Q97.5 de los {window} saldos anteriores.')
+  if view in ('MAD','Superposición'):
+   st.caption(f'Envolvente descriptiva: saldo observado ± {MAD_MULTIPLIER} × {MAD_SCALE} × MAD de los {window-1} cambios entre los {window} saldos anteriores.')
+  if view=='Superposición':
+   st.caption('Verde: intersección de las dos bandas en cada corte. La zona queda vacía donde no se cruzan.')
+  if not full_history and not points.empty:
+   st.caption(f'La vista abre hasta {CONTEXT} cierres antes del primer fold. Puedes ver toda la historia publicada con el control superior.')
+  if show_estimates and (points.empty or points['model_q50'].isna().all()):
+   st.info('Esta cuenta no tiene estimaciones Q50 publicadas al inicio de F1–F3.')
+  available = 'mad_low' if view=='MAD' else 'pct_low'
+  if reference[available].isna().all():
+   st.info('La historia disponible no completa la ventana de referencia seleccionada.')
   st.download_button('Descargar historia y z-score de la cuenta',history.to_csv(index=False),file_name='historia_'+account+'.csv')
  elif page=='Model Arena':
   a,b,c=st.columns(3)

@@ -15,6 +15,7 @@ from .schemas import SCHEMAS,ENGINE2_COLUMNS,athena_type
 from .historical_sigma import expanding_sigma
 from .observed_quantiles import trailing_quantiles
 from .alert_taxonomy import evaluate
+from .mac2_events import mac2_events
 from .mac_rules_reference import OriginalMacRules,OFFICIAL_COLUMNS,REFERENCE_SHA256
 
 
@@ -78,7 +79,7 @@ def source_groups(source,scratch):
  if pending is not None and pending.height:yield pending.sort('date')
 
 
-def read_prediction(path,inventory,targets=('saldo','variacion')):
+def read_prediction(path,inventory,targets=('saldo','variacion'),*,mad=False):
  frame=pl.read_parquet(path)
  methods=[x for x in frame['method'].unique().to_list() if x!='Persistencia']
  if len(methods)!=1:raise ValueError(f'{path}: se esperaba un modelo más Persistencia')
@@ -100,7 +101,12 @@ def read_prediction(path,inventory,targets=('saldo','variacion')):
  if paired.height!=model.height:raise ValueError('Baseline y modelo no están emparejados: '+str(path))
  numbers=['scale','model_q025','model_q50','model_q975','baseline_q025','baseline_q50','baseline_q975']
  if paired.filter(~pl.all_horizontal(pl.col(c).is_not_null() & pl.col(c).is_finite() for c in numbers)).height:raise ValueError('Predicción no finita')
- if paired.filter((pl.col('scale')<=0)|(pl.col('model_q025')>pl.col('model_q50'))|(pl.col('model_q50')>pl.col('model_q975'))|(pl.col('baseline_q025')>pl.col('baseline_q50'))|(pl.col('baseline_q50')>pl.col('baseline_q975'))).height:raise ValueError('Escala o cuantiles inválidos')
+ invalid=pl.col('scale')<=0
+ for prefix in ('model','baseline'):
+  low,point,upper=(pl.col(prefix+'_'+key) for key in ('q025','q50','q975'))
+  invalid=invalid | (low>upper)
+  if not mad:invalid=invalid | (low>point) | (point>upper)
+ if paired.filter(invalid).height:raise ValueError('Escala o límites inválidos')
  if set(paired['target'])!=set(targets) or paired.group_by('account_id','date','fold').agg(pl.col('target').n_unique().alias('n')).filter(pl.col('n')!=len(targets)).height:raise ValueError('Saldo y variación deben compartir las mismas cuentas y fechas')
  return paired.join(inventory.select('account_id','budget','cohort','taxonomy','sign'),on='account_id',validate='m:1')
 
@@ -134,6 +140,8 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
  root=run/'curvas' if (run/'curvas/resultados_x0.json').is_file() else run
  run=root.parent
  report=json.loads((root/'resultados_x0.json').read_text())
+ interval=report.get('config',{}).get('curvas',{}).get('interval',{'method':'percentiles'})
+ mad=interval['method']=='mad'
  if report.get('version')!='0.11.0':raise ValueError('Adaptador para corrida Arena 0.11.0; no convierte silenciosamente otro protocolo')
  source=run/'source/engine1.parquet';definitions=json.loads((root/'candidatos.json').read_text())
  calendar_manifest=run.parent/'calendar/provenance.json'
@@ -146,7 +154,7 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
  raw_files.extend((len(raw_roots),p,root) for p in mac3_metadata)
  paths.extend(p for _,p,_ in raw_files)
  signature=source_signature(paths)
- data_modules=['prepare.py','schemas.py','common.py','alert_taxonomy.py','historical_sigma.py','observed_quantiles.py','mac_rules_reference.py']
+ data_modules=['prepare.py','schemas.py','common.py','alert_taxonomy.py','historical_sigma.py','observed_quantiles.py','mac_rules_reference.py','mac2_events.py']
  code_hashes={name:sha(Path(__file__).parent/name) for name in data_modules}
  preparation_signature=hashlib.sha256(json.dumps(dict(source=signature,shards=config.shards,delivery_load_date=config.delivery_load_date,code=code_hashes),sort_keys=True).encode()).hexdigest()
  out=Path(out).expanduser().resolve()
@@ -210,6 +218,7 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
  finally:ctx_writer.close()
  if load_date is None:raise ValueError('Indica delivery_load_date: Engine 1 no informa load_date para el layout contable')
  inventory=pl.DataFrame(inv,infer_schema_length=None)
+ accounts={row["account_id"]:row for row in inv} if mad else {}
  writer.write('inventory',inv)
  writer.write('candidates',[dict(candidate=d['id'],input=d['inputs'],selection_score=d.get('score'),parameters_json=json.dumps(d,ensure_ascii=False,sort_keys=True)) for d in definitions])
  if (root/'hpo_trials.parquet').is_file():
@@ -220,7 +229,7 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
   candidate_paths=sorted((root/'predicciones').glob(d['id']+'_F[123].parquet'))
   if len(candidate_paths)!=3:raise ValueError('Faltan folds completos de '+d['id'])
   for path in candidate_paths:
-   paired=read_prediction(path,inventory,targets=(d['target'],) if d.get('target') else ('saldo','variacion'))
+   paired=read_prediction(path,inventory,targets=(d['target'],) if d.get('target') else ('saldo','variacion'),mad=mad)
    fold=paired['fold'][0]
    population=paired.select('account_id','currency','date','target','observed').sort('account_id','date','target').write_csv()
    digest=hashlib.sha256(population.encode()).hexdigest()
@@ -237,7 +246,7 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
  errors=[]
  for record in records:
   progress('Emisión operativa y contratos · '+record['fold'])
-  paired=read_prediction(root/record['predicciones'],inventory)
+  paired=read_prediction(root/record['predicciones'],inventory,mad=mad)
   writer.write('metrics',metric_rows(paired,'operational','Winner'))
   dates=paired['date'].unique().to_list()
   context=pl.scan_parquet(ctx_path).filter(pl.col('date').is_in([str(d)[:10] for d in dates])).collect()
@@ -252,22 +261,40 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
    e2.update({k:decimal(v,10 if i<2 else 24) for i,(k,v) in enumerate(zip(ENGINE2_COLUMNS[7:12],values))});engine2.append(e2)
    if r['observed'] is None:continue
    if r['fx'] is None or not math.isfinite(r['fx']) or r['fx']<=0:raise ValueError('Falta FX válido para Engine 3: '+aid)
-   for prefix,label in [('model','Winner'),('baseline','Baseline')]:
+   for prefix,label in ([] if mad else [('model','Winner'),('baseline','Baseline')]):
     e=evaluate(r['observed'],r[prefix+'_q025'],r[prefix+'_q975'],r['sign'],target,r['taxonomy'],r['fx'])
     if e['active']:events.append(dict(account_id=aid,currency=ccy,taxonomy=r['taxonomy'],cohort=r['cohort'],budget=r['budget'],date=day(r['date']),target=target,fold=fold,source=label,severity=e['severity'],reasons='|'.join(e['reasons']),has_alert=any(x!='ALERTA_SOBREGIRO' for x in e['reasons']),overdraft=e['overdraft'],observed=r['observed'],lower=e['lower'],upper=e['upper'],percentage=e['percentage']))
    if r['balance'] is None:raise ValueError('Predicción observada sin historia de Engine 1: '+aid)
    validation.append(dict(account_id=aid,cutoff_date=r['date'],evaluation_phase=fold,gl_account_id=aid[:-len(ccy)] if aid.endswith(ccy) else aid,currency_id=ccy,classification_account_type=r['sign'],gl_account_hist_behaviour_type=r['taxonomy'],saldo_del_dia=r['balance'],variacion_saldo=r['variation'],saldo_anterior=r['previous_balance'],saldo_del_dia_valorizado=r['balance']*r['fx'],saldo_del_dia_anterior_valorizado=r['previous_balance']*r['fx'],variacion_valorizada=r['variation']*r['fx'],tipo_cambio_final=r['fx'],stddev_saldo_del_dia=r['std_balance'],stddev_variacion_saldo=r['std_variation'],final_model=candidate,cross_key_id=aid+('_var' if target=='variacion' else ''),forecast=r['model_q50'],lower_interval=r['model_q025'],upper_interval=r['model_q975']))
+   if mad:
+    validation[-1].update(baseline_point=r['baseline_q50'],baseline_lower=r['baseline_q025'],baseline_upper=r['baseline_q975'])
   # Accounting-zero rules remain independent of learned forecasting eligibility.
   zeros=context.join(inventory.select('account_id','currency','taxonomy','cohort','sign','budget'),on='account_id',validate='m:1').filter(pl.col('taxonomy')=='cuentas_cero')
   for z in zeros.to_dicts():
    if z['fx'] is None or not math.isfinite(z['fx']) or z['fx']<=0:raise ValueError('Falta FX válido para regla cero: '+z['account_id'])
-   e=evaluate(z['balance'],None,None,z['sign'],'saldo',z['taxonomy'],z['fx'])
-   if e['active']:events.append(dict(account_id=z['account_id'],currency=z['currency'],taxonomy=z['taxonomy'],cohort=z['cohort'],budget=z['budget'],date=day(z['date']),target='saldo',fold=record['fold'],source='Regla contable',severity=e['severity'],reasons='REGLA_CERO',has_alert=True,overdraft=False,observed=z['balance'],lower=None,upper=None,percentage=None))
+   e={} if mad else evaluate(z['balance'],None,None,z['sign'],'saldo',z['taxonomy'],z['fx'])
+   if e.get('active'):events.append(dict(account_id=z['account_id'],currency=z['currency'],taxonomy=z['taxonomy'],cohort=z['cohort'],budget=z['budget'],date=day(z['date']),target='saldo',fold=record['fold'],source='Regla contable',severity=e['severity'],reasons='REGLA_CERO',has_alert=True,overdraft=False,observed=z['balance'],lower=None,upper=None,percentage=None))
    validation.append(dict(account_id=z['account_id'],cutoff_date=z['date'],evaluation_phase=record['fold'],gl_account_id=z['account_id'][:-len(z['currency'])] if z['account_id'].endswith(z['currency']) else z['account_id'],currency_id=z['currency'],classification_account_type=z['sign'],gl_account_hist_behaviour_type=z['taxonomy'],saldo_del_dia=z['balance'],variacion_saldo=z['variation'],saldo_anterior=z['previous_balance'],saldo_del_dia_valorizado=z['balance']*z['fx'],saldo_del_dia_anterior_valorizado=z['previous_balance']*z['fx'],variacion_valorizada=z['variation']*z['fx'],tipo_cambio_final=z['fx'],stddev_saldo_del_dia=z['std_balance'],stddev_variacion_saldo=z['std_variation'],final_model='',cross_key_id=z['account_id'],forecast=None,lower_interval=None,upper_interval=None))
-  writer.by_account('daily',daily);writer.by_account('events',events);writer.write('engine2',engine2,record['fold'])
   if validation:
-   official=OriginalMacRules().run_partitioned(pl.DataFrame(validation,infer_schema_length=None),context=('evaluation_phase','cutoff_date'),atypical_as_trainable=True).official.select(OFFICIAL_COLUMNS).with_columns(pl.col('cutoff_date','load_date').str.to_date())
+   inputs=pl.DataFrame(validation,infer_schema_length=None)
+   rules=OriginalMacRules()
+   partitions=('evaluation_phase','cutoff_date')
+   result=rules.run_partitioned(inputs,context=partitions,atypical_as_trainable=True)
+   official=result.official.select(OFFICIAL_COLUMNS).with_columns(pl.col('cutoff_date','load_date').str.to_date())
    writer.write('engine3',official,record['fold'])
+   if mad:
+    fold=record['fold']
+    events.extend(mac2_events(result,source='Winner',fold=fold,accounts=accounts,include_zeros=True))
+    if 'baseline_lower' in inputs.columns:
+     baseline=inputs.with_columns(pl.col('baseline_point').alias('forecast'),
+         pl.col('baseline_lower').alias('lower_interval'),pl.col('baseline_upper').alias('upper_interval'))
+     result=rules.run_partitioned(baseline,context=partitions,atypical_as_trainable=True)
+     events.extend(mac2_events(result,source='Baseline',fold=fold,accounts=accounts))
+  writer.by_account('daily',daily)
+  if mad:
+   for event in events:event['date']=day(event['date'])
+  writer.by_account('events',events)
+  writer.write('engine2',engine2,record['fold'])
  if training_path:
   train=pl.read_parquet(training_path) if str(training_path).endswith('.parquet') else pl.read_csv(training_path)
   expected=SCHEMAS['training'].names
@@ -314,14 +341,16 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
  manifest=dict(status='PREPARED',version='0.12.1',run_id=run_id,run_label=run.name,publication_id=pub,source_signature=signature,preparation_signature=preparation_signature,code_hashes=code_hashes,shards=config.shards,files=writer.entries,raw_deliveries=raw,
   calendar_provenance=calendar_provenance,
   datasets={name:dict(columns=[dict(name=f.name,type=athena_type(f.type)) for f in sc],rows=sum(x['rows'] for x in writer.entries if x['dataset']==name)) for name,sc in SCHEMAS.items() if name!='publications'},
-  protocol='F1–F3 usados en selección; no Test independiente. Layout Engine2 preservado, selección MAC3 explícita. Engine3 port literal MAC2 separado de diagnóstico MAC3.',
+  protocol=('F1–F3 usados en selección. Envolvente MAD y alertamiento MAC2 Engine3.' if mad else
+            'F1–F3 usados en selección; no Test independiente. Layout Engine2 preservado, selección MAC3 explícita. Engine3 port literal MAC2 separado de diagnóstico MAC3.'),
+  interval=interval,
   policies=report.get('config',{}).get('curvas',{}).get('policies',{}),
   input_search=report.get('config',{}).get('curvas',{}).get('input_search',{'mode':'per_input'}),
   view=publication_view(
    report.get('config',{}).get('curvas',{}).get('objectives',['saldo','variacion']),
-   [.025,.5,.975],labels={'saldo':'Saldo','variacion':'Variación'},
+   [] if mad else [.025,.5,.975],labels={'saldo':'Saldo','variacion':'Variación'},
    units={'saldo':'Moneda nativa','variacion':'Moneda nativa'},
-   metrics=['SMAPE','MAE','RMSE','Coverage'],routing=['account_id','target']),
+   metrics=['SMAPE','MAE','RMSE'] if mad else ['SMAPE','MAE','RMSE','Coverage'],routing=['account_id','target']) | {'interval_method':interval['method']},
   population_hashes=population_hashes,engine3_reference_sha256=REFERENCE_SHA256,training_available=bool(training_path),delivery_load_date=str(load_date),created_at=datetime.now(timezone.utc).isoformat())
  manifest_path.write_text(json.dumps(manifest,ensure_ascii=False,indent=2))
  for name in ['_context.parquet','_sorted_source.parquet']:(out/name).unlink(missing_ok=True)

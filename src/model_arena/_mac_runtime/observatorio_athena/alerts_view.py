@@ -33,7 +33,7 @@ def visible_frames(history, daily, events, stage, context):
     return history, daily, events
 
 
-def alert_figure(history, daily, events, families, bands, *, scale='Comprimida · admite negativos', detail=False):
+def alert_figure(history, daily, events, families, bands, *, scale='Comprimida · admite negativos', detail=False, mad=False):
     fig = make_subplots(rows=3, cols=1, shared_xaxes=True, row_heights=[.43, .43, .14],
                         vertical_spacing=.065, subplot_titles=['Saldo', 'Variación', 'Timeline'])
     for row, target in [(1, 'saldo'), (2, 'variacion')]:
@@ -59,9 +59,11 @@ def alert_figure(history, daily, events, families, bands, *, scale='Comprimida �
                 fill = 'rgba('+','.join(str(int(color[i:i+2],16)) for i in (1,3,5))+',.12)'
                 fig.add_trace(go.Scatter(x=frame.date,y=transform(frame[lower]),line={'width':0},showlegend=False,hoverinfo='skip',connectgaps=False),row=row,col=1)
                 fig.add_trace(go.Scatter(x=frame.date,y=transform(frame[upper]),line={'width':0},fill='tonexty',fillcolor=fill,showlegend=False,hoverinfo='skip',connectgaps=False),row=row,col=1)
-            curves = [(prefix+'_q50','Q50')]
+            curves = [(prefix+'_q50','Puntual' if mad and family!='Observado' else 'Q50')]
             if detail:
-                curves = [(lower,'Q2.5'),(prefix+'_q50','Q50'),(upper,'Q97.5')]
+                curves = [(lower,'Inferior' if mad and family!='Observado' else 'Q2.5'),
+                          (prefix+'_q50','Puntual' if mad and family!='Observado' else 'Q50'),
+                          (upper,'Superior' if mad and family!='Observado' else 'Q97.5')]
             if family == 'Observado':
                 curves.append(('observed','Real'))
             for column, label in curves:
@@ -70,7 +72,7 @@ def alert_figure(history, daily, events, families, bands, *, scale='Comprimida �
                 name = family+' · '+label
                 fig.add_trace(go.Scatter(x=frame.date,y=transform(frame[column]),customdata=pd.to_numeric(frame[column],errors='coerce'),
                     name=name,legendgroup=name,showlegend=row==1 and name not in legends,
-                    line={'color':color,'width':2 if label=='Real' else 1.3,'dash':'solid' if label=='Real' else {'Q2.5':'dot','Q50':'dash','Q97.5':'longdash'}[label]},
+                    line={'color':color,'width':2 if label=='Real' else 1.3,'dash':'solid' if label=='Real' else {'Q2.5':'dot','Q50':'dash','Q97.5':'longdash','Inferior':'dot','Puntual':'dash','Superior':'longdash'}[label]},
                     connectgaps=False,hovertemplate='%{x}<br>'+name+' %{customdata:,.2f}<extra></extra>'),row=row,col=1)
                 legends.add(name)
         e = events[events.target == target]
@@ -124,6 +126,8 @@ def alert_figure(history, daily, events, families, bands, *, scale='Comprimida �
 def render_alerts(repo, data, paged, filters):
     a,b,c = st.columns(3)
     origin=a.selectbox('Origen del pronóstico',['Winner','Baseline'])
+    if repo.mac2_events:
+        st.caption('Motor de reglas: MAC 2 / Engine 3 · Intervalo: envolvente MAD.')
     block=b.selectbox('Tramo del conteo',['Todos','Tres folds',*FOLDS])
     objective=c.selectbox('Objetivo de la alerta',['Cualquiera de los dos','saldo','variacion','Ambos el mismo día'])
     a,b = st.columns(2)
@@ -183,7 +187,9 @@ def render_alerts(repo, data, paged, filters):
     st.subheader('Detalle de la cuenta · '+account)
     routing=daily[['target','fold','candidate','input']].drop_duplicates()
     final=routing[routing.fold=='FUTURO']
-    if final.empty:
+    if repo.mac2_events:
+        st.caption('MAC 2 · cada tramo muestra su envolvente MAD publicada. Los marcadores del saldo y la variación confirmados comparten la severidad del saldo que emite Engine 3.')
+    elif final.empty:
         st.warning('No se publicó la asignación final de esta serie. No se mostrará una composición como ganador.')
         daily=daily.iloc[:0]
     else:
@@ -206,14 +212,14 @@ def render_alerts(repo, data, paged, filters):
     scale=b.radio('Escala',['Lineal','Comprimida · admite negativos','Acercar al observado'],index=1)
     families=st.pills('Familias visibles',['Baseline','Winner','Observado'],selection_mode='multi',default=['Observado','Winner'],key='c21_family_buttons')
     families=['Modelo' if v=='Winner' else v for v in families]
-    bands=st.pills('Bandas Q2.5–Q97.5',['Baseline','Winner','Observado'],selection_mode='multi',default=['Observado','Winner'],key='c21_band_buttons')
+    bands=st.pills('Bandas de referencia' if repo.mac2_events else 'Bandas Q2.5–Q97.5',['Baseline','Winner','Observado'],selection_mode='multi',default=['Observado','Winner'],key='c21_band_buttons')
     bands=['Modelo' if v=='Winner' else v for v in bands]
     h,d,e=visible_frames(history,daily,events,stage,context)
-    st.caption('Alertamientos · '+origin+' · Las bandas observadas describen la historia anterior. Ambos ejes monetarios muestran $; la compresión cambia el espaciado, no los montos. Winner usa sólo el candidato final por serie.')
+    st.caption('Alertamientos · '+origin+' · Las bandas observadas describen la historia anterior. Ambos ejes monetarios muestran $; la compresión cambia el espaciado, no los montos.' + ('' if repo.mac2_events else ' Winner usa sólo el candidato final por serie.'))
     if h.empty and d.empty:
         st.info('Sin observaciones para el tramo seleccionado.')
         return
-    st.plotly_chart(alert_figure(h,d,e,families,bands,scale=scale,detail=preset=='Detalle 3 × 3'),use_container_width=True)
+    st.plotly_chart(alert_figure(h,d,e,families,bands,scale=scale,detail=preset=='Detalle 3 × 3',mad=repo.mac2_events),use_container_width=True)
     st.caption('Timeline · Punto para saldo, aro para variación y ambos superpuestos cuando coinciden. El rombo morado marca sobregiro. Los marcadores se anclan al importe observado de su fecha.')
     a,b=st.columns(2)
     for target,column in [('saldo',a),('variacion',b)]:

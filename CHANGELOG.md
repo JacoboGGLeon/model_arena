@@ -1,3 +1,10 @@
+# 0.1.8
+
+- Add RLinear with reversible input normalization and an X0-only point-forecast profile for NLinear, DLinear and RLinear.
+- Add causal MAD envelopes around the prior close (or the prior forecast for horizons beyond H=1) and around zero for variation. Train and rank on normalized point MAE.
+- Feed MAD limits into the original MAC 2 rules and publish confirmed Engine 3 decisions in Observatory. Keep the legacy layouts and percentile mode.
+- Include the three historical band views in Observatory.
+
 # 0.1.7
 
 - Add MAC HPO mode family_objective with a shared budget across compatible input aliases.

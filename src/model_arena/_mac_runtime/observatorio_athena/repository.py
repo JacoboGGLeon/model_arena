@@ -19,8 +19,8 @@ def predicates(filters,alias=''):
  return terms
 
 class Repository:
- def __init__(self,config,run_id,publication_id,shards=None):
-  self.config=config;self.run_id=run_id;self.publication_id=publication_id;self.shards=shards or config.shards
+ def __init__(self,config,run_id,publication_id,shards=None,*,mac2_events=False):
+  self.config=config;self.run_id=run_id;self.publication_id=publication_id;self.shards=shards or config.shards;self.mac2_events=mac2_events
  def table(self,name):return self.config.table(name)
  def scope(self,alias=''):
   p=alias+'.' if alias else ''
@@ -53,7 +53,7 @@ class Repository:
  def events(self,filters=Filters(),source='Winner',fold=None,target=None,severity=None,cause=None,account=None,include_rules=False):
   source_filter = 'source IN ('+literal(source)+",'Regla contable')" if include_rules and source in ('Winner','Baseline') else 'source='+literal(source)
   more=[source_filter]
-  if source=='Winner':
+  if source=='Winner' and not self.mac2_events:
    winner = ("CASE WHEN substr(i.candidate,1,1)='{' THEN CASE d.target "
              "WHEN 'saldo' THEN try(json_extract_scalar(i.candidate,'$.saldo')) "
              "WHEN 'variacion' THEN try(json_extract_scalar(i.candidate,'$.variacion')) END "
