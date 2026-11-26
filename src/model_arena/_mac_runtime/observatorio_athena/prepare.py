@@ -338,12 +338,13 @@ def prepare(run,out,config,*,delivery_dirs=(),training_path=None,progress=print)
    summary=block.group_by(keys).agg(pl.col('account_id').n_unique().alias('accounts'),*[pl.col(k).sum() for k in moments]).with_columns(pl.lit(selected_fold).alias('fold')).collect(engine='streaming')
    writer.write('arena_summary',summary)
  writer.flush()
- manifest=dict(status='PREPARED',version='0.12.1',run_id=run_id,run_label=run.name,publication_id=pub,source_signature=signature,preparation_signature=preparation_signature,code_hashes=code_hashes,shards=config.shards,files=writer.entries,raw_deliveries=raw,
+ manifest=dict(status='PREPARED',version='0.12.1',run_id=run_id,run_label=report.get('run_label',run.name),publication_id=pub,source_signature=signature,preparation_signature=preparation_signature,code_hashes=code_hashes,shards=config.shards,files=writer.entries,raw_deliveries=raw,
   calendar_provenance=calendar_provenance,
   datasets={name:dict(columns=[dict(name=f.name,type=athena_type(f.type)) for f in sc],rows=sum(x['rows'] for x in writer.entries if x['dataset']==name)) for name,sc in SCHEMAS.items() if name!='publications'},
   protocol=('F1–F3 usados en selección. Envolvente MAD y alertamiento MAC2 Engine3.' if mad else
             'F1–F3 usados en selección; no Test independiente. Layout Engine2 preservado, selección MAC3 explícita. Engine3 port literal MAC2 separado de diagnóstico MAC3.'),
   interval=interval,
+  run_spec=report.get('config',{}).get('curvas',{}).get('run_spec'),
   policies=report.get('config',{}).get('curvas',{}).get('policies',{}),
   input_search=report.get('config',{}).get('curvas',{}).get('input_search',{'mode':'per_input'}),
   view=publication_view(

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 from model_arena.mad import mad_envelopes, point_forecast
 from model_arena.models.engine import predict_batches, train_quantiles
-from model_arena.models.tft import Network, TFTParameters
+from model_arena.profiles.forecasters import model_definitions
 from agentic_forecasting.data import batch
 from agentic_forecasting.backbones import TFTTemporalBackbone
 
@@ -43,25 +43,13 @@ class CurveTFT(nn.Module):
         future = len(declared["future"]) if declared is not None else (
             spec.calendar_features if candidate.inputs in ("X2", "X3") else 0
         )
-        if getattr(candidate, "family", "encoder_decoder") != "encoder_decoder":
-            from model_arena.models.complete import CompleteNetwork, CompleteParameters
-
-            self.external = CompleteNetwork(
-                family=candidate.family, targets=targets, window=spec.window,
-                h=spec.horizon, historical=past, future=future,
-                parameters=CompleteParameters.model_validate(candidate.family_params),
-                point=point_forecast(candidate),
-            )
+        definition = model_definitions()[getattr(candidate, "family", "encoder_decoder")]
+        model = definition.network(spec, candidate, dropout, targets=targets, past=past, future=future,
+                                   legacy_encoder=legacy_tft_encoder)
+        if definition.encoder_search:
+            self.network = model
         else:
-            params = TFTParameters(
-                encoder_kind=getattr(candidate, "encoder_kind", "tft_compact"),
-                encoder_design="independent" if candidate.encoder_design == "independent" else "shared",
-                depth=candidate.depth, decoder_depth=getattr(candidate, "decoder_depth", 1),
-                width=candidate.width, activation=getattr(candidate, "activation", "ELU"),
-                dropout=dropout,
-            )
-            self.network = Network(targets, spec.horizon, past, future, params, window=spec.window,
-                                   tft_encoder=legacy_tft_encoder)
+            self.external = model
 
     @property
     def encoders(self):
@@ -115,9 +103,19 @@ def make_batch(series, refs, spec, candidate, device, calendar, observed):
 
 
 def fit_curves(series, end, spec, candidate, device, calendar, config, on_epoch=None, monitor=None):
+    definition = model_definitions()[getattr(candidate, "family", "encoder_decoder")]
+    return definition.fit(
+        fit_neural=fit_neural, make_network=CurveTFT, make_batch=make_batch, series=series, end=end,
+        spec=spec, candidate=candidate, device=device, calendar=calendar, config=config,
+        on_epoch=on_epoch, monitor=monitor,
+    )
+
+
+def fit_neural(*, series, end, spec, candidate, device, calendar, config, on_epoch, monitor,
+               make_network, make_batch):
     torch.manual_seed(spec.seed)
     rng = np.random.default_rng(spec.seed)
-    model = CurveTFT(spec, candidate, config["dropout"]).to(device)
+    model = make_network(spec, candidate, config["dropout"]).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=getattr(candidate, "lr", spec.learning_rate),
                                   weight_decay=getattr(candidate, "weight_decay", .01))
     first_origin = max(spec.window, spec.horizon)
@@ -145,9 +143,18 @@ def fit_curves(series, end, spec, candidate, device, calendar, config, on_epoch=
             on_epoch(row)
         print(f'Época {epoch}/{spec.epochs} · pérdida {loss:.6g}', flush=True)
 
+    loss = None
+    residual = getattr(candidate, "residual", {})
+    if residual.get("baseline") == "learned":
+        def loss(features, truth):
+            corrected, base = model.network.forecasts(features["history_y"], features.get("history_calendar"),
+                                                       features.get("future_calendar"))
+            weight = residual["base_weight"]
+            return weight * (truth - base).abs() + (1 - weight) * (truth - corrected).abs()
+
     train_quantiles(model, optimizer, schedule, epochs=spec.epochs, batch_size=spec.batch_size,
                     quantiles=CURVE_PROBS, batch=batch_training, on_epoch=record, accumulate_double=False,
-                    point=point_forecast(candidate))
+                    point=point_forecast(candidate), point_loss=loss)
     return model
 
 

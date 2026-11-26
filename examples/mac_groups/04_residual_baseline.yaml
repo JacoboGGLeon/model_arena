@@ -1,0 +1,16 @@
+name: 04_residual_baseline
+objectives:
+  saldo: 24
+  variacion: 24
+models:
+- model: encoder_decoder
+  inputs:
+  - X0
+  - X1
+  - X2
+  - X3
+residuals:
+  saldo:
+    baseline: last
+  variacion:
+    baseline: zero

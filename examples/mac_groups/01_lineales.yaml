@@ -1,0 +1,12 @@
+name: 01_lineales
+objectives:
+  saldo: 24
+  variacion: 24
+models:
+- model: nlinear
+  inputs: &id001
+  - X0
+- model: dlinear
+  inputs: *id001
+- model: rlinear
+  inputs: *id001

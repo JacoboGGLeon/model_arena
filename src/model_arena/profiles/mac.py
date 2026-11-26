@@ -27,7 +27,7 @@ class MacProject:
 
     @classmethod
     def create(
-        cls, path, *, training_config, publication_config, calendar_path=None, calendar=None, device="cuda"
+        cls, path, *, training_config, publication_config, calendar_path=None, calendar=None, device="cuda", run_spec=None
     ):
         path = Path(path).expanduser().resolve()
         if path.exists():
@@ -37,8 +37,14 @@ class MacProject:
         training = read_json(training_config)
         if training.get("requested_accounts") != 0 or training.get("aws", {}).get("account_limit") != 0:
             raise ValueError("The profile requires the complete eligible universe, account limits = 0")
+        if run_spec is not None:
+            from .run_spec import RunSpec
+
+            if not isinstance(run_spec, RunSpec):
+                run_spec = RunSpec.from_yaml(run_spec)
+            training["curvas"] = run_spec.curves(training["curvas"])
         objectives = training['curvas'].get('objectives', ['saldo','variacion'])
-        if objectives != ['saldo','variacion']:
+        if set(objectives) != {'saldo', 'variacion'} or len(objectives) != 2:
             raise ValueError('Declare objectives=[saldo, variacion] for independent MAC studies')
         training['curvas']['objectives'] = objectives
         training['curvas'].pop('encoders', None)
@@ -48,11 +54,12 @@ class MacProject:
         from ..contracts import PruningSpec
 
         PruningSpec.model_validate(training["curvas"].get("pruner") or {})
-        from ..mad import MAD_FAMILIES, MacIntervalSpec
-        from ..models.complete import FAMILIES
+        from ..mad import MacIntervalSpec
+        from ..models.complete import MAC_ACTIVATIONS
+        from .forecasters import model_definitions
 
         families=training['curvas'].get('families',{})
-        if ('families' in training['curvas'] and not families) or set(families)-{'encoder_decoder', *FAMILIES} or any(not isinstance(n,int) or n<1 for n in families.values()):
+        if ('families' in training['curvas'] and not families) or set(families)-set(model_definitions()) or any(not isinstance(n,int) or n<1 for n in families.values()):
             raise ValueError('Invalid family names or per-family trial budgets')
         kinds = training["curvas"].get("encoder_kinds", ["tft_compact"])
         from ..contracts import SearchSpec
@@ -61,7 +68,7 @@ class MacProject:
             raise ValueError("Declare distinct encoders")
         if "encoder_decoder" in families or "families" not in training["curvas"]:
             encoder_trials = families["encoder_decoder"] if families else training["curvas"]["trials"]
-            if encoder_trials < len(kinds):
+            if run_spec is None and encoder_trials < len(kinds):
                 raise ValueError("Encoder–Decoder family budget must cover all declared encoders")
         from ..calendar import prepare_snapshot
 
@@ -77,18 +84,28 @@ class MacProject:
         curves["calendar_sha256"] = snapshot.provenance["calendar_sha256"]
         if type(curves["final_epochs"]) is not int or curves["final_epochs"] < 1:
             raise ValueError("final_epochs debe ser un entero positivo")
-        curves["input_search"] = InputSearchSpec.model_validate(curves.get("input_search", {})).model_dump()
+        curves["input_search"] = InputSearchSpec.model_validate(curves.get("input_search", {})).model_dump(exclude_none=True)
         curves["policies"] = MacPolicy.model_validate(curves.get("policies", {})).model_dump(mode="json")
         interval = MacIntervalSpec.model_validate(curves.get("interval", {}))
         if interval.method == "mad":
-            if not families or set(families) - set(MAD_FAMILIES):
-                raise ValueError("MAD point forecasts require NLinear, DLinear or RLinear")
+            if not families:
+                raise ValueError("Declare families for MAD point forecasts")
+            activations = curves.setdefault("activations", list(MAC_ACTIVATIONS))
+            if not activations or len(set(activations)) != len(activations) or set(activations) - set(MAC_ACTIVATIONS):
+                raise ValueError("MAD activations must be a unique subset of ReLU, GELU, Tanh")
             if interval.window > training["model"]["window"]:
                 raise ValueError("MAD reference window cannot exceed the training lookback")
             if curves["policies"]["selection_metric"] != "scaled_mae":
                 raise ValueError("MAD point forecasts require selection_metric=scaled_mae")
         curves["interval"] = interval.model_dump()
-        study_plan(curves, training["model"]["epochs"])
+        studies = study_plan(curves, training["model"]["epochs"])
+        if run_spec is not None:
+            for study in studies:
+                definition = model_definitions()[study["family"]]
+                definition.validate_study(study, curves, run_spec)
+            actual = {target: sum(s["trials"] for s in studies if s["objective"] == target) for target in objectives}
+            if actual != run_spec.objectives:
+                raise ValueError(f"Resolved trial budgets {actual} differ from {run_spec.objectives}")
         check_space(path, stage="crear proyecto")
         path.mkdir(parents=True)
         source = Path(str(files("model_arena") / "_mac_runtime"))
@@ -164,8 +181,13 @@ class MacProject:
         studies = study_plan(training["curvas"], training["model"]["epochs"])
         return dict(
             studies=studies,
+            group=(training["curvas"].get("run_spec") or {}).get("name"),
+            trials_by_objective={
+                target: sum(item["trials"] for item in studies if item["objective"] == target)
+                for target in training["curvas"].get("objectives", [])
+            },
             interval=training["curvas"].get("interval", {"method": "percentiles"}),
-            input_search=InputSearchSpec.model_validate(training["curvas"].get("input_search", {})).model_dump(),
+            input_search=InputSearchSpec.model_validate(training["curvas"].get("input_search", {})).model_dump(exclude_none=True),
             candidate_configurations=sum(item["trials"] for item in studies),
             hpo_fits=sum(item["trials"] * item["folds"] for item in studies),
             final_epochs=training["curvas"].get("final_epochs", 75),

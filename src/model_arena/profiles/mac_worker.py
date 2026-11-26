@@ -127,6 +127,7 @@ def execute(project, stage):
                         version="0.11.0",
                         producer=f"model-arena-sdk {__version__}",
                         corrida=run.name,
+                        run_label=project.name if cfg["curvas"].get("run_spec") else run.name,
                         horizonte=spec.horizon,
                         ajustes=records,
                         futuro=future,

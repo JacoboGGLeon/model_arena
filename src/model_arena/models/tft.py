@@ -55,7 +55,7 @@ class Encoder(nn.Module):
 
 
 class Network(nn.Module):
-    def __init__(self, targets, h, historical, future, params, window=None, *, tft_encoder=Encoder):
+    def __init__(self, targets, h, historical, future, params, window=None, *, tft_encoder=Encoder, point=False, residual=None, linear_history=False):
         super().__init__()
         activations = {"ReLU": nn.ReLU, "Mish": nn.Mish, "GELU": nn.GELU, "Tanh": nn.Tanh, "ELU": nn.ELU}
         if params.activation not in activations or params.encoder_design not in ("shared", "independent"):
@@ -67,6 +67,7 @@ class Network(nn.Module):
         self.future_calendar = nn.Linear(future, width) if future else None
         count = 1 if params.encoder_design == "shared" else targets
         self.encoder_kind = params.encoder_kind
+        self.point = point
         self.encoders = nn.ModuleList(
             tft_encoder(targets, width, params.depth, params.dropout, act)
             if params.encoder_kind == "tft_compact" else ContextEncoder(
@@ -78,10 +79,17 @@ class Network(nn.Module):
             layers = []
             for _ in range(params.decoder_depth):
                 layers.extend([nn.Linear(width, width), act(), nn.Dropout(params.dropout)])
-            heads.append(nn.Sequential(*layers, nn.Linear(width, 3)))
+            heads.append(nn.Sequential(*layers, nn.Linear(width, 1 if point else 3)))
         self.quantiles = nn.ModuleList(heads)
+        self.residual = residual
+        self.linear_history = linear_history
+        if residual and residual["baseline"] == "learned":
+            self.residual_head = nn.Sequential(
+                nn.Linear(width + 1, residual["width"]), act(), nn.Dropout(params.dropout),
+                nn.Linear(residual["width"], 1),
+            )
 
-    def forward(self, history, past, future):
+    def forecasts(self, history, past, future):
         representations = []
         for enc, pos in zip(self.encoders, self.positions):
             projected = enc.input(history)
@@ -106,9 +114,28 @@ class Network(nn.Module):
         outputs = []
         for i, head in enumerate(self.quantiles):
             rep = representations[0] if len(representations) == 1 else representations[i]
-            mid, lower, upper = head(rep).split(1, dim=-1)
+            values = head(rep)
+            if self.point:
+                outputs.append(values)
+                continue
+            mid, lower, upper = values.split(1, dim=-1)
             outputs.append(torch.cat((mid-F.softplus(lower), mid, mid+F.softplus(upper)), dim=-1))
-        return torch.stack(outputs, dim=2)
+        prediction = torch.stack(outputs, dim=2)
+        if self.residual is None or self.residual["baseline"] == "zero":
+            return prediction, None
+        if self.residual["baseline"] == "last":
+            last = history[:, -1:]
+            if not self.linear_history:
+                last = last.sinh()
+            return prediction + last.unsqueeze(-1), None
+        base = outputs[0]
+        detached = base.detach()
+        correction = self.residual_head(torch.cat((representations[0].detach(), detached), dim=-1))
+        return (detached + correction).unsqueeze(2), base.unsqueeze(2)
+
+    def forward(self, history, past, future):
+        prediction, _ = self.forecasts(history, past, future)
+        return prediction
 
 
 class TFTCompact:

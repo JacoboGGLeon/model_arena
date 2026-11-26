@@ -1,0 +1,11 @@
+name: 03_encoder_decoder
+objectives:
+  saldo: 24
+  variacion: 24
+models:
+- model: encoder_decoder
+  inputs:
+  - X0
+  - X1
+  - X2
+  - X3

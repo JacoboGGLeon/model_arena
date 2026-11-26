@@ -18,6 +18,7 @@ from agentic_forecasting.data import weighted_entropy
 from model_arena.winner_selection import assignments
 from model_arena.models.engine import temporal_folds
 from model_arena.input_spec import study_plan
+from model_arena.profiles.forecasters import model_definitions
 from model_arena.scoring import pinball_error
 from curvas_modelo import CurveTFT, fit_curves, predict_curves
 from curvas_metricas import REFERENCE
@@ -31,7 +32,13 @@ def population(run, config, spec):
     initial = len(axis)-3*spec.horizon
     if initial < spec.window+spec.horizon:
         raise ValueError('Historia insuficiente para tres folds')
-    data = pl.read_parquet(run/'source/engine1.parquet').filter(pl.col('date').is_in(axis)).sort('account_id','date')
+    data = (
+        pl.scan_parquet(run / "source/engine1.parquet")
+        .select("account_id", "date", "taxonomy", "balance", "variation", "currency")
+        .filter(pl.col("date").is_in(axis))
+        .sort("account_id", "date")
+        .collect()
+    )
     seen, atypical, inventory, exclusions = [], [], [], []
     for (aid,), group in data.group_by('account_id', maintain_order=True):
         tax = group['taxonomy'][0]
@@ -52,26 +59,18 @@ def population(run, config, spec):
     return axis, seen, atypical, pl.DataFrame(inventory)
 
 
-def candidate_for(trial, inp, cfg):
-    family=cfg.get('family','encoder_decoder')
-    if family != 'encoder_decoder':
-        from model_arena.models.complete import suggest_parameters
-        from model_arena.contracts import SearchSpec
-        space=SearchSpec(width=cfg['widths'],depth=cfg['depths'],decoder_depth=cfg['decoder_depths'],
-            lr_range=cfg['lr_range'],wd_range=cfg['wd_range'],dropout=cfg['dropout'])
-        params=suggest_parameters(family,trial,space)
-        return SimpleNamespace(id=trial.user_attrs.get('resume_candidate_id',f'{inp}_{family}_T{trial.number:04d}'),
-            inputs=inp,family=family,family_params=params,encoder_kind=family,encoder_design='independent',
-            lr=params['lr'],weight_decay=params['weight_decay'])
-    return SimpleNamespace(id=trial.user_attrs.get('resume_candidate_id', f'{inp}_T{trial.number:04d}'),inputs=inp,family='encoder_decoder',
-        encoder_kind=trial.suggest_categorical('encoder_kind',cfg['encoder_kinds']) if 'encoder_kinds' in cfg else 'tft_compact',
-        encoder_design='single' if cfg.get('target') else trial.suggest_categorical('encoder',cfg['encoders']),
-        depth=trial.suggest_categorical('encoder_depth',cfg['depths']),
-        decoder_depth=trial.suggest_categorical('decoder_depth',cfg['decoder_depths']),
-        width=trial.suggest_categorical('width',cfg['widths']),
-        activation=trial.suggest_categorical('activation',cfg['activations']),
-        lr=trial.suggest_float('lr',*cfg['lr_range'],log=True),
-        weight_decay=trial.suggest_float('weight_decay',*cfg['wd_range'],log=True))
+def candidate_for(trial, inp, cfg, *, window=20):
+    from model_arena.models.complete import MAC_ACTIVATIONS
+    from model_arena.contracts import SearchSpec
+
+    family = cfg.get("family", "encoder_decoder")
+    search = SearchSpec(width=cfg["widths"], depth=cfg["depths"], decoder_depth=cfg["decoder_depths"],
+                        lr_range=cfg["lr_range"], wd_range=cfg["wd_range"], dropout=cfg["dropout"],
+                        activation=cfg.get("activations", list(MAC_ACTIVATIONS)))
+    params = model_definitions()[family].suggest(trial, cfg, search, window=window)
+    default_id = f"{inp}_T{trial.number:04d}" if family == "encoder_decoder" else f"{inp}_{family}_T{trial.number:04d}"
+    return SimpleNamespace(id=trial.user_attrs.get("resume_candidate_id", default_id),
+                           inputs=inp, family=family, **params)
 
 
 def loss_rows(frame, candidate, inventory):
@@ -112,6 +111,8 @@ def combine_history(root):
 
 
 def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, cfg, *, trial=None, fold_index=0):
+    definition = model_definitions()[getattr(candidate, "family", "encoder_decoder")]
+    device = getattr(definition, "device", device)
     if fold=='FUTURO':spec=replace(spec,epochs=int(cfg.get('final_epochs',spec.epochs)))
     if spec.epochs<1:raise ValueError('Épocas debe ser positivo')
     path = root/'modelos'/f'{candidate.id}_{fold}.pt'
@@ -119,7 +120,7 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
     if path.exists():
         saved = torch.load(path,map_location=device,weights_only=False)
         model = CurveTFT(spec,candidate,cfg['dropout']).to(device)
-        if hasattr(model,'external') and saved.get('upstream_provenance') != model.external.provenance:
+        if saved.get('upstream_provenance') != getattr(getattr(model, 'external', None), 'provenance', None):
             raise ValueError('Cambió la implementación upstream del checkpoint')
         if cfg.get('calendar_sha256') and (
             saved.get('calendar_sha256') != calendar.source_sha256
@@ -151,13 +152,15 @@ def fit_saved(root, seen, dates, end, spec, candidate, fold, device, calendar, c
     model = fit_curves(known,end,spec,candidate,device,calendar,cfg,on_epoch=on_epoch,monitor=monitor)
     temp = path.with_suffix('.tmp')
     check_space(root, extra_bytes=sum(v.numel()*v.element_size() for v in model.state_dict().values())*2, stage="checkpoint")
-    torch.save(dict(upstream_provenance=model.external.provenance if hasattr(model,'external') else None,state_dict=model.state_dict(),candidate=vars(candidate),spec=asdict(spec),calendar_sha256=calendar.source_sha256,
+    torch.save(dict(upstream_provenance=getattr(getattr(model, 'external', None), 'provenance', None),state_dict=model.state_dict(),candidate=vars(candidate),spec=asdict(spec),calendar_sha256=calendar.source_sha256,
                     training_history=history,loss_monitor=monitor.selection,end=end,fold=fold,scaling='asinh(history/scale); forecast*scale',version='0.11.0',training_account_ids=[s.id for s in seen]),temp)
     temp.replace(path)
     return model
 
 
 def emit(model, series, dates, end, spec, candidate, fold, device, calendar):
+    definition = model_definitions()[getattr(candidate, "family", "encoder_decoder")]
+    device = getattr(definition, "device", device)
     known = [Series(s.id,dates,s.values[:end],s.currency,s.budget,s.cohort) for s in series]
     forecast, baseline = predict_curves(model,known,end,spec,candidate,device,calendar)
     observed = None if fold == 'FUTURO' else np.stack([s.values[end:end+spec.horizon] for s in series])
@@ -195,9 +198,11 @@ def run_study(run, config_path, device, *, stage="all"):
     for task in study_plan(cfg, spec.epochs):
         family, budget, target = (task[k] for k in ('family', 'trials', 'objective'))
         cfg={**config['curvas'],'family':family,'trials':budget,'target':target}
+        cfg["model_options"] = cfg.get("model_options", {}).get(family, {})
         pooled_inputs = task.get('inputs')
         fixed_input = task.get('input')
-        encoder_kinds = cfg.get('encoder_kinds', []) if family == 'encoder_decoder' else []
+        encoder_kinds = cfg.get('encoder_kinds', []) if model_definitions()[family].encoder_search else []
+        mad = cfg.get('interval', {}).get('method') == 'mad'
         if pooled_inputs:
             study_key = f'pooled_{family}_{target}'
             startup = task['startup_trials_per_input']
@@ -207,6 +212,8 @@ def run_study(run, config_path, device, *, stage="all"):
             if target:
                 study_key += f'_{target}'
             sampler_options = dict(seed=spec.seed+cfg['inputs'].index(fixed_input))
+        if 'tpe_startup_trials' in task:
+            sampler_options['n_startup_trials'] = task['tpe_startup_trials']
         sampler_path=root/f'{study_key}_sampler.pkl'
         sampler=pickle.loads(sampler_path.read_bytes()) if sampler_path.exists() else optuna.samplers.TPESampler(**sampler_options)
         pruner=make_pruner(cfg.get('pruner'),epochs_per_fold=spec.epochs)
@@ -219,11 +226,16 @@ def run_study(run, config_path, device, *, stage="all"):
                     if slot in queued_slots:
                         continue
                     params = {'input': alias}
-                    if encoder_kinds:
+                    if encoder_kinds and (not mad or round_index < len(encoder_kinds)):
                         params['encoder_kind'] = encoder_kinds[round_index % len(encoder_kinds)]
                     study.enqueue_trial(params, user_attrs={'input_startup_slot': slot})
         elif encoder_kinds:
-            enqueue_encoder_schedule(study, encoder_kinds, budget)
+            if mad:
+                if not study.get_trials():
+                    for kind in encoder_kinds:
+                        study.enqueue_trial({'encoder_kind': kind})
+            else:
+                enqueue_encoder_schedule(study, encoder_kinds, budget)
 
         def objective(trial):
             inp = trial.suggest_categorical('input', pooled_inputs) if pooled_inputs else fixed_input
@@ -234,7 +246,7 @@ def run_study(run, config_path, device, *, stage="all"):
                 prefix = f'{inp}_{family}' + (f'_{target}' if target else '')
                 trial.set_user_attr('candidate_id', trial.user_attrs.get('resume_candidate_id', f'{prefix}_T{trial.number:04d}'))
             check_space(root, stage=f'trial {inp} {trial.number}')
-            candidate=candidate_for(trial,inp,cfg)
+            candidate=candidate_for(trial,inp,cfg,window=spec.window)
             if 'input_specs' in cfg:
                 candidate.input_features = cfg['input_specs'][inp]
                 candidate.transform = cfg['policies']['transform']

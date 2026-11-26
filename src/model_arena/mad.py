@@ -7,7 +7,6 @@ from pydantic import Field
 
 from .contracts import Contract
 
-MAD_FAMILIES = ("nlinear", "dlinear", "rlinear")
 MAD_SCALE = 1.4826
 
 

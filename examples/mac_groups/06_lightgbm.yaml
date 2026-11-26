@@ -1,0 +1,29 @@
+name: 06_lightgbm
+objectives:
+  saldo: 24
+  variacion: 24
+models:
+- model: lightgbm
+  inputs:
+  - X0
+  - X1
+  - X2
+  - X3
+tree_search:
+  learning_rate:
+  - 0.01
+  - 0.15
+  num_leaves:
+  - 15
+  - 31
+  - 63
+  min_data_in_leaf:
+  - 32
+  - 64
+  - 128
+  lambda_l2:
+  - 0.001
+  - 10
+  patience: 3
+  threads: 4
+  max_rows: 1000000

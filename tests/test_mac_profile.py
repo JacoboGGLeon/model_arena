@@ -13,7 +13,7 @@ from model_arena.storage import digest
 
 
 @pytest.mark.train
-@pytest.mark.parametrize("calendar_kind", ["csv", "parquet", "artifact", "families", "dates_only", "pooled", "mad"])
+@pytest.mark.parametrize("calendar_kind", ["csv", "parquet", "artifact", "families", "dates_only", "pooled", "mad", "group_residual", "group_tree"])
 def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypatch, calendar_kind):
     # Subprocesses inherit the CPU torch installation used by this test session.
     import torch
@@ -131,8 +131,10 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
         cfg['curvas'].update(families=dict(encoder_decoder=1,tide=1,nhits=1,nlinear=1,dlinear=1,nbeats=1))
     if calendar_kind == "mad":
         cfg["curvas"].update(
-            families={"nlinear": 1, "dlinear": 1, "rlinear": 1},
-            inputs=["X0"], final_epochs=2,
+            families={"nlinear": 1, "dlinear": 1, "rlinear": 1, "nbeats": 1,
+                      "nhits": 4, "tide": 4, "encoder_decoder": 4},
+            final_epochs=2, activations=["GELU"], encoder_kinds=["gru"],
+            input_search={"mode": "family_objective", "startup_trials_per_input": 1},
             interval={"method": "mad", "window": 4},
             policies={"selection_metric": "scaled_mae"},
             pruner={"kind": "patience", "patience": 3},
@@ -144,6 +146,26 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
             input_search={"mode": "family_objective", "startup_trials_per_input": 1},
             final_epochs=2,
         )
+    group = None
+    if calendar_kind.startswith("group_"):
+        from model_arena import RunSpec
+
+        cfg["model"]["epochs"] = 2
+        cfg["curvas"].update(
+            final_epochs=2, encoder_kinds=["gru"],
+            interval={"method": "mad", "window": 4},
+            policies={"selection_metric": "scaled_mae"},
+        )
+        tree = calendar_kind == "group_tree"
+        group = RunSpec.model_validate({
+            "name": calendar_kind,
+            "models": [{"model": "lightgbm" if tree else "encoder_decoder", "inputs": ["X0", "X3"]}],
+            "objectives": {"saldo": 2, "variacion": 2},
+            "tree_search": {"threads": 1, "min_data_in_leaf": [2]} if tree else None,
+            "residuals": {} if tree else {
+                "saldo": {"baseline": "last"}, "variacion": {"baseline": "learned", "widths": [4]},
+            },
+        })
     (tmp_path / "training.json").write_text(json.dumps(cfg))
     (tmp_path / "publication.json").write_text(
         json.dumps(dict(s3_base="s3://example/objects/", query_output="s3://example/results/", shards=2))
@@ -154,11 +176,16 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
         publication_config=tmp_path / "publication.json",
         **calendar_kwargs,
         device="cpu",
+        run_spec=group,
     )
     assert project.calendar_provenance()["feature_count"] == width
+    if group is not None:
+        plan = project.plan()
+        assert plan["trials_by_objective"] == {"saldo": 2, "variacion": 2}
+        assert plan["hpo_fits"] == 12
     if calendar_kind == "mad":
         plan = project.plan()
-        assert len(plan["studies"]) == 6 and plan["hpo_fits"] == 18
+        assert len(plan["studies"]) == 14 and plan["hpo_fits"] == 96
     if calendar_kind == "parquet":
         assert project.plan()["final_epochs"] == 2
         assert project.plan()["hpo_fits"] == 12
@@ -222,7 +249,7 @@ def test_mac_lifecycle_preserves_outputs_and_frozen_inference(tmp_path, monkeypa
     assert before == {str(p): digest(p) for p in weights}
     manifest = json.loads((project.path / "release/publication.json").read_text())
     if calendar_kind == "mad":
-        assert audit.height == 6
+        assert audit.height == 32
         assert manifest["interval"]["method"] == "mad"
         assert manifest["view"]["quantiles"] == []
         assert manifest["view"]["interval_method"] == "mad"

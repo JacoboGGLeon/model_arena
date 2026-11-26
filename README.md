@@ -2,10 +2,10 @@
 
 Explicit forecasting competition and observable learning histories.
 
-Version **0.1.8**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.8"`.
+Version **0.1.10**. Install the complete SDK with `python -m pip install "model-arena-sdk==0.1.10"`.
 Source: https://github.com/JacoboGGLeon/model_arena · PyPI: https://pypi.org/project/model-arena-sdk/.
 
-The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. Previous releases exercised the storage profile end-to-end in ADA, including S3/Athena publication. The 0.1.8 MAD profile is tested locally with synthetic data.
+The import remains `model_arena`. Default dependencies cover training, AWS publication and Observatory; no extras are required for the ADA workflow. This release includes a generic forecasting core and a MAC migration adapter. Previous releases exercised the storage profile end-to-end in ADA, including S3/Athena publication. The MAD profile is tested locally with synthetic data.
 
 ```python
 from model_arena import ModelArena
@@ -30,7 +30,7 @@ publication = arena.publish(release, destination='publications')
 The default installation includes the complete forecasting and monitoring runtime. In ADA, retain the corporate pip/Artifactory configuration. Do not print `pip config list` or embed tokens in notebooks.
 
 ```bash
-python -m pip install "model-arena-sdk==0.1.8"
+python -m pip install "model-arena-sdk==0.1.10"
 ```
 
 In ADA, keep the existing Artifactory indexes and approved CUDA-compatible PyTorch installation. No package index or CUDA build is forced by the SDK. Default installation includes PyTorch and the dashboard dependencies; imports remain lazy and reading results does not initialize CUDA. Existing extras remain available for compatibility.
@@ -195,3 +195,47 @@ To switch modes, create a new project. See [ADR 0010](docs/adr/0010-shared-input
 The ADA profile runs NLinear, DLinear and RLinear on X0 for saldo and variacion. Each independent TPE study has 25 trials with a per-fold validation patience of three epochs. Point forecasts use normalized MAE. For each forecast origin, MAD uses the 19 adjacent balance changes across the 20 most recent closes. At H=1 the saldo band is anchored to the previous observed close. At H>1 it is anchored to the previous model-predicted close. The variacion band is symmetric around zero. The model point can fall outside the reference band.
 
 Engine 3 keeps the original MAC 2 rules and confirmation step. The Athena event table is populated from those decisions for MAD runs. Engine 2/3 layouts are preserved. MAD limits are robust reference bounds without a nominal 95% coverage claim. Existing percentile-mode projects retain their protocol; create a new ADA project for the MAD experiment.
+
+## ADA MAD architecture search (0.1.9)
+
+The ADA profile compares NLinear, DLinear, RLinear, NBEATS, NHITS, TiDE and Encoder–Decoder. There is one study per family and target. NHITS, TiDE and Encoder–Decoder use X0–X3 with six attempts assigned to each input in a 24-trial study. The other families use X0. Encoder–Decoder samples MLP, GRU or compact TFT as `encoder_kind`. Initial trials ensure the three encoders are tried for each input.
+
+ReLU, GELU and Tanh are searched for all seven families. For NLinear and DLinear the activation is applied to input deviations from the last value before the upstream linear model. For RLinear it acts on the reversibly normalized input. These are activated variants of the linear families. Dropout stays fixed at 0.1 in the ADA profile. DLinear searches each integer moving-average width from 2 to 20, including even widths with length-preserving padding.
+
+The models emit one point per horizon, fit with normalized MAE. The MAD envelope and the original MAC 2 Engine 3 confirmation rules use the same protocol as 0.1.8. Create a new project to run the expanded search.
+
+## Independent MAC runs (0.1.10)
+
+Pick one YAML from `examples/mac_groups` per run. Use a unique project directory for each. The project freezes its search plan, calendar, configuration, runtime and input provenance. The notebook in the ADA bundle uses the same API.
+
+```python
+from model_arena import RunSpec
+from model_arena.profiles.mac import MacProject
+
+run = RunSpec.from_yaml("examples/mac_groups/04_residual_baseline.yaml")
+project = MacProject.create(
+    "runs/mac_residual_baseline",
+    training_config="private/training.json",
+    publication_config="private/publication.json",
+    calendar_path="private/calendar_authoritative.csv",
+    device="cuda",
+    run_spec=run,
+)
+print(project.plan()["trials_by_objective"])
+project.prepare().tune().select().fit()
+forecast = project.predict()
+delivery = project.postprocess()
+```
+
+| Group | Search budget per target |
+| --- | --- |
+| Linears | NLinear, DLinear and RLinear each get eight X0 trials |
+| Neural blocks | NBEATS gets eight X0 trials. NHITS and TiDE each get two per X0–X3 |
+| Direct encoder–decoder | Six per X0–X3 |
+| Fixed baseline with learned residual | Six per X0–X3 |
+| Learned baseline with learned residual | Six per X0–X3 |
+| Global LightGBM | Six per X0–X3 on CPU |
+
+The encoder–decoder profiles search MLP, GRU and compact TFT. The first three slots of each input cover the three encoders. Optuna TPE searches the remaining hyperparameters. For the fixed baseline group, saldo learns a residual from the last observed balance and variación uses zero as a control. For the learned baseline group, the residual decoder receives detached copies of the encoder representation and point prediction. The two weighted MAE terms train the base and correction. Selection uses the corrected point. LightGBM shares a model across all accounts and horizons for each target and incorporates the horizon as a feature. During HPO, early stopping uses a tail inside the training history when enough data is available.
+
+The run profiles declare model names, compatible inputs, budget per target and optional model-specific parameters. Installed extensions can register a model definition through the `model_arena.mac_models` entry-point group. The definition implements the `ForecasterDefinition` protocol for feature capabilities, study validation, parameter suggestions, construction and training. A model can validate its own YAML `options` without changing the run schema. The MAC profile supports its accounting-specific saldo and variación outputs. The generic `ModelArena` API accepts its own target schema and forecaster registry.

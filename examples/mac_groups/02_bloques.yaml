@@ -1,0 +1,17 @@
+name: 02_bloques
+objectives:
+  saldo: 24
+  variacion: 24
+models:
+- model: nbeats
+  inputs:
+  - X0
+- model: nhits
+  inputs: &id001
+  - X0
+  - X1
+  - X2
+  - X3
+- model: tide
+  inputs: *id001
+sampler_startup: 2

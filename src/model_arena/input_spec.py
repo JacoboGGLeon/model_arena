@@ -9,8 +9,9 @@ from .contracts import Contract
 
 
 class InputSearchSpec(Contract):
-    mode: Literal["per_input", "family_objective"] = "per_input"
+    mode: Literal["per_input", "family_objective", "balanced"] = "per_input"
     startup_trials_per_input: int = Field(default=4, ge=1, strict=True)
+    tpe_startup_trials: int | None = Field(default=None, ge=1, strict=True)
 
 
 class InputSpec(Contract):
@@ -52,9 +53,13 @@ def resolve_inputs(names, declared, calendar_features):
 
 
 def study_plan(curves, epochs, *, folds=3):
-    from .models.complete import FAMILIES, capabilities
+    from .profiles.forecasters import model_definitions
+
+    definitions_by_model = model_definitions()
 
     search = InputSearchSpec.model_validate(curves.get("input_search", {}))
+    sampler_settings = ({"tpe_startup_trials": search.tpe_startup_trials}
+                        if search.tpe_startup_trials is not None else {})
     definitions = curves.get("input_specs")
     families = curves["families"] if "families" in curves else {"encoder_decoder": curves["trials"]}
     requested = curves.get("family_inputs", {})
@@ -68,9 +73,9 @@ def study_plan(curves, epochs, *, folds=3):
             "future": ["*"] if name in ("X2", "X3") else [],
         }
         for family, trials in families.items():
-            if family in FAMILIES:
+            if family in definitions_by_model:
                 try:
-                    capabilities(family, len(features["historical"]), len(features["future"]))
+                    definitions_by_model[family].supports(len(features["historical"]), len(features["future"]))
                 except ValueError:
                     if "family_inputs" in curves and name in curves["family_inputs"].get(family, []):
                         raise
@@ -78,8 +83,10 @@ def study_plan(curves, epochs, *, folds=3):
             if family in curves.get("family_inputs", {}) and name not in curves["family_inputs"][family]:
                 continue
             for target in curves.get("objectives", [None]):
-                studies.append(dict(input=name, family=family, objective=target, trials=trials, folds=folds,
-                                    epochs=epochs, historical=features["historical"], future=features["future"]))
+                budget = curves["objective_budgets"][target] // len(families) if search.mode == "balanced" else trials
+                studies.append(dict(input=name, family=family, objective=target, trials=budget, folds=folds,
+                                    epochs=epochs, historical=features["historical"], future=features["future"],
+                                    **sampler_settings))
     missing = set(families) - {item["family"] for item in studies}
     if missing:
         raise ValueError(f"Familias sin inputs compatibles: {sorted(missing)}")
@@ -95,7 +102,9 @@ def study_plan(curves, epochs, *, folds=3):
             pooled.append(options[0])
             continue
         trials = options[0]["trials"]
-        startup = search.startup_trials_per_input
+        startup = trials // len(options) if search.mode == "balanced" else search.startup_trials_per_input
+        if search.mode == "balanced" and trials % len(options):
+            raise ValueError(f"{family}/{objective}: incompatible budget for {len(options)} inputs")
         if startup * len(options) > trials:
             raise ValueError(
                 f"{family}/{objective}: {len(options)} inputs × {startup} trials iniciales "
@@ -104,6 +113,7 @@ def study_plan(curves, epochs, *, folds=3):
         pooled.append(dict(
             family=family, objective=objective, trials=trials, folds=folds, epochs=epochs,
             inputs=[item["input"] for item in options], startup_trials_per_input=startup,
+            **sampler_settings,
             input_features={
                 item["input"]: {"historical": item["historical"], "future": item["future"]}
                 for item in options

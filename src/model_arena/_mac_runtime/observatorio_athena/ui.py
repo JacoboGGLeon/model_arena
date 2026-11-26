@@ -99,7 +99,7 @@ def render_app(config,athena):
    if k.startswith('query_'):del st.session_state[k]
   st.rerun()
  with st.sidebar.expander('Procedencia'):
-  st.caption('Publicación: '+pub);st.caption(selected.protocol);st.caption('Versión del monitor: Model Arena 0.1.8')
+  st.caption('Publicación: '+pub);st.caption(selected.protocol);st.caption('Versión del monitor: Model Arena 0.1.9')
   if st.button('Ver calendario de esta publicación',key='calendar_provenance'):
    try:
     calendar_info=data(f'SELECT * FROM {repo.table("calendar_provenance")} WHERE {repo.where()}')

@@ -8,6 +8,7 @@ from importlib.metadata import version
 
 import torch
 from torch import nn
+from torch.nn import functional as F
 from pydantic import Field
 
 from ..contracts import Contract
@@ -15,7 +16,11 @@ from .tft import TFTCompact
 
 FAMILIES = ('tide', 'nhits', 'nlinear', 'dlinear', 'nbeats', 'rlinear')
 UPSTREAM = '3.1.2'
-# Identity emitted by the unchanged legacy percentile adapter in 0.1.7.
+MAC_ACTIVATIONS = ('ReLU', 'GELU', 'Tanh')
+LINEAR_FAMILIES = ('nlinear', 'dlinear', 'rlinear')
+# Identity emitted by the 0.1.8 point adapter before configurable activation.
+LEGACY_POINT_ADAPTER_SHA = '8b3c168dc5d92acddf311b0e10c167077dd9e2034b6d125431840025ce1be511'
+# Identity emitted by the unchanged percentile adapter in 0.1.7.
 LEGACY_ADAPTER_SHA = 'a430878d6ef91e23edaab2948e2eeec17eafef851bfdc3ca76c78d4b8db09aa9'
 
 
@@ -32,7 +37,7 @@ def capabilities(kind, historical, future):
         raise ValueError(kind+' supports history-only inputs (such as X0); historical and future calendar features are unsupported')
 
 
-def suggest_parameters(kind, trial, space):
+def suggest_parameters(kind, trial, space, *, mac_point=False, moving_avg_max=20):
     architecture = {}
     if kind == 'tide':
         architecture = dict(hidden_size=trial.suggest_categorical('hidden_size', space.width),
@@ -46,7 +51,7 @@ def suggest_parameters(kind, trial, space):
         blocks=trial.suggest_categorical('blocks_per_stack',[1,2])
         architecture=dict(n_blocks=[blocks]*3,mlp_units=[[width,width]]*3,
             n_pool_kernel_size=trial.suggest_categorical('pooling',[1,2,4]),
-            activation=trial.suggest_categorical('activation',['ReLU','Tanh']),
+            activation=trial.suggest_categorical('activation',space.activation if mac_point else ['ReLU','Tanh']),
             dropout_prob_theta=space.dropout)
         k=architecture.pop('n_pool_kernel_size')
         architecture['n_pool_kernel_size']=[k,k,1]
@@ -55,13 +60,21 @@ def suggest_parameters(kind, trial, space):
         blocks=trial.suggest_categorical('blocks_per_stack',[1,2])
         architecture=dict(n_blocks=[blocks]*3,mlp_units=[[width,width]]*3,
             shared_weights=trial.suggest_categorical('shared_weights',[False,True]),
-            activation=trial.suggest_categorical('activation',['ReLU','Tanh']))
+            activation=trial.suggest_categorical('activation',space.activation if mac_point else ['ReLU','Tanh']))
     elif kind == 'dlinear':
-        architecture=dict(moving_avg_window=trial.suggest_categorical('moving_avg_window',[3,5,9,25]))
+        architecture=dict(moving_avg_window=trial.suggest_int('moving_avg_window', 2, moving_avg_max)
+                          if mac_point else trial.suggest_categorical('moving_avg_window',[3,5,9,25]))
     elif kind == 'rlinear':
-        architecture = dict(dropout=trial.suggest_categorical('dropout', [0., space.dropout]) if space.dropout else 0.)
+        architecture = dict(dropout=space.dropout if mac_point else (
+            trial.suggest_categorical('dropout', [0., space.dropout]) if space.dropout else 0.))
     elif kind != 'nlinear':
         raise ValueError('No search adapter for '+kind)
+    if mac_point and kind in (*LINEAR_FAMILIES, 'tide'):
+        architecture['activation'] = trial.suggest_categorical('activation', space.activation)
+    if mac_point and kind in LINEAR_FAMILIES:
+        architecture['dropout'] = space.dropout
+    if mac_point and kind == 'nbeats':
+        architecture['dropout_prob_theta'] = space.dropout
     return dict(architecture=architecture,lr=trial.suggest_float('lr',*space.lr_range,log=True),
                 weight_decay=trial.suggest_float('weight_decay',*space.wd_range,log=True))
 
@@ -83,22 +96,76 @@ class RLinear(nn.Module):
         return forecast.reshape(-1, self.horizon, self.outputs) * spread + center
 
 
+class ActivatedRLinear(RLinear):
+    def __init__(self, window, horizon, outputs, dropout, activation):
+        super().__init__(window, horizon, outputs, dropout)
+        self.activation = activation()
+
+    def forward(self, values):
+        center = values.mean(dim=1, keepdim=True)
+        spread = (values.var(dim=1, keepdim=True, unbiased=False) + 1e-5).sqrt()
+        normalized = (values - center) / spread
+        forecast = self.projection(self.dropout(self.activation(normalized.squeeze(-1))))
+        return forecast.reshape(-1, self.horizon, self.outputs) * spread + center
+
+
+class SameMovingAverage(nn.Module):
+    """Replicate the endpoints while keeping the lookback length for even kernels."""
+
+    def __init__(self, size):
+        super().__init__()
+        self.size = size
+
+    def forward(self, values):
+        left = (self.size - 1) // 2
+        padded = F.pad(values.unsqueeze(1), (left, self.size - 1 - left), mode='replicate')
+        return F.avg_pool1d(padded, self.size, stride=1).squeeze(1)
+
+
+class TiDEResidual(nn.Module):
+    """Reuse the upstream residual block weights with a configurable activation."""
+
+    def __init__(self, block, activation):
+        super().__init__()
+        self.lin1, self.lin2, self.skip, self.drop = block.lin1, block.lin2, block.skip, block.drop
+        self.norm = block.norm if block.layernorm else nn.Identity()
+        self.activation = activation()
+
+    def forward(self, values):
+        dense = self.drop(self.lin2(self.activation(self.lin1(values))))
+        return self.norm(dense + self.skip(values))
+
+
 class CompleteNetwork(nn.Module):
     def __init__(self, *, family, targets, window, h, historical, future, parameters, point=False):
         super().__init__()
         capabilities(family,historical,future)
         self.window,self.h,self.historical,self.future=window,h,historical,future
+        architecture = dict(parameters.architecture)
+        activation_name = architecture.get('activation') if point else None
+        if activation_name is not None and activation_name not in MAC_ACTIVATIONS:
+            raise ValueError('Unsupported MAC point activation: ' + activation_name)
+        activation = getattr(nn, activation_name) if activation_name else None
+        self.linear_input = nn.Identity()
+        if activation and family in ('nlinear', 'dlinear'):
+            self.linear_input = nn.Sequential(activation(), nn.Dropout(architecture.pop('dropout', 0.)))
+        if activation and family in (*LINEAR_FAMILIES, 'tide'):
+            architecture.pop('activation')
         if family == 'rlinear':
-            if set(parameters.architecture) - {'dropout'}:
+            if set(architecture) - {'dropout'}:
                 raise ValueError('Unsupported RLinear architecture parameters')
             self.models = nn.ModuleList(
-                RLinear(window, h, 1 if point else 3, **parameters.architecture)
+                ActivatedRLinear(window, h, 1, architecture.get('dropout', 0.), activation)
+                if activation else RLinear(window, h, 1 if point else 3, **architecture)
                 for _ in range(targets)
             )
             self.provenance = dict(provider='model_arena', family=family,
                 source_sha256=hashlib.sha256(inspect.getsource(RLinear).encode()).hexdigest(),
                 objective='point' if point else 'quantiles',
                 reference='https://arxiv.org/abs/2305.10721')
+            if activation:
+                self.provenance.update(activation=activation_name,
+                    adapter_sha256=hashlib.sha256(inspect.getsource(ActivatedRLinear).encode()).hexdigest())
             return
         if version('neuralforecast') != UPSTREAM:
             raise RuntimeError('This adapter requires neuralforecast=='+UPSTREAM)
@@ -112,24 +179,54 @@ class CompleteNetwork(nn.Module):
                      nlinear=set(),dlinear={'moving_avg_window'},
                      nbeats={'n_harmonics','n_basis','basis','stack_types','n_blocks','mlp_units',
                              'dropout_prob_theta','activation','shared_weights'})[family]
-        if set(parameters.architecture)-allowed:
+        if set(architecture)-allowed:
             raise ValueError('Unsupported '+family+' architecture parameters')
         self.window,self.h,self.historical,self.future=window,h,historical,future
         exogenous=dict(hist_exog_list=[f'h{i}' for i in range(historical)] or None,
                        futr_exog_list=[f'f{i}' for i in range(future)] or None) if family in ('tide','nhits') else {}
+        # The pinned upstream block allowlists omit GELU, though their MLPs
+        # accept standard PyTorch activation modules.
+        use_gelu = activation_name == 'GELU' and family in ('nhits', 'nbeats')
+        if use_gelu:
+            architecture['activation'] = 'ReLU'
+        even_window = None
+        if family == 'dlinear' and architecture.get('moving_avg_window', 1) % 2 == 0:
+            even_window = architecture['moving_avg_window']
+            architecture['moving_avg_window'] = even_window - 1 if even_window > 2 else 3
+        nbeats_dropout = architecture.pop('dropout_prob_theta', 0.) if point and family == 'nbeats' else 0.
         numpy_state,python_state=np.random.get_state(),random.getstate()
         try:
             self.models=nn.ModuleList(cls(h=h,input_size=window,
                 **exogenous,
                 loss=MAE() if point else MQLoss(quantiles=[.025,.5,.975]),scaler_type='identity',
                 random_seed=(torch.initial_seed()+i) % (2**32),
-                **parameters.architecture) for i in range(targets))
+                **architecture) for i in range(targets))
         finally:
             np.random.set_state(numpy_state)
             random.setstate(python_state)
+        for model in self.models:
+            if even_window is not None:
+                model.decomp.MovingAvg = SameMovingAverage(even_window)
+            if family == 'tide' and activation:
+                from neuralforecast.models.tide import MLPResidual
+                for name, module in list(model.named_modules()):
+                    if isinstance(module, MLPResidual):
+                        model.set_submodule(name, TiDEResidual(module, activation))
+            if use_gelu:
+                for name, module in list(model.blocks.named_modules(remove_duplicate=False)):
+                    if isinstance(module, nn.ReLU):
+                        model.blocks.set_submodule(name, nn.GELU())
+            if nbeats_dropout:
+                # Upstream NBEATS rejects a positive dropout argument.
+                activation_type = activation or getattr(nn, architecture.get("activation", "ReLU"))
+                for block in model.blocks:
+                    for index, module in enumerate(block.layers):
+                        if isinstance(module, activation_type):
+                            block.layers[index] = nn.Sequential(module, nn.Dropout(nbeats_dropout))
         self.provenance=dict(provider='neuralforecast',version=UPSTREAM,family=family,
             source_sha256=hashlib.sha256(Path(inspect.getfile(cls)).read_bytes()).hexdigest(),
-            adapter_sha256=LEGACY_ADAPTER_SHA if not point else hashlib.sha256(inspect.getsource(CompleteNetwork).encode()).hexdigest(),
+            adapter_sha256=(hashlib.sha256(inspect.getsource(CompleteNetwork).encode()).hexdigest()
+                            if activation else LEGACY_POINT_ADAPTER_SHA if point else LEGACY_ADAPTER_SHA),
             targets='independent_networks',history_transform='linear_window_normalized')
 
     def forward(self, history, past, future):
@@ -143,6 +240,9 @@ class CompleteNetwork(nn.Module):
         predictions=[]
         for i,model in enumerate(self.models):
             y=linear[:,:,i:i+1]
+            if not isinstance(self.linear_input, nn.Identity):
+                last = y[:, -1:, :]
+                y = last + self.linear_input(y - last)
             raw = model(y) if isinstance(model, RLinear) else model(dict(
                 insample_y=y, insample_mask=torch.ones_like(y), hist_exog=past,
                 futr_exog=futr, stat_exog=None))

@@ -1,0 +1,26 @@
+name: 05_residual_aprendido
+objectives:
+  saldo: 24
+  variacion: 24
+models:
+- model: encoder_decoder
+  inputs:
+  - X0
+  - X1
+  - X2
+  - X3
+residuals:
+  saldo:
+    baseline: learned
+    widths:
+    - 16
+    - 32
+    - 64
+    base_weight: 0.5
+  variacion:
+    baseline: learned
+    widths:
+    - 16
+    - 32
+    - 64
+    base_weight: 0.5

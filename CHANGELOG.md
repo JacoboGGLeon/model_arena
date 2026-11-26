@@ -1,3 +1,15 @@
+# 0.1.10
+
+- Add six independent MAC profiles with validated per-objective trial budgets and balanced input allocation.
+- Add encoder–decoder residuals over fixed and learned baselines and a global LightGBM forecaster.
+- Preserve the MAD envelopes and MAC 2 layouts. Use registered model definitions for capabilities, search, construction and fit.
+
+# 0.1.9
+
+- Extend MAD point training to NHITS, NBEATS, TiDE and Encoder–Decoder with MLP, GRU or compact TFT searched inside one family.
+- Search ReLU, GELU and Tanh across families with fixed configured dropout. Support integer DLinear moving averages from 2 to 20 in the ADA profile.
+- Allocate six trials per compatible input for the 24-trial multi-input ADA studies. Retain the MAD envelope and original MAC 2 / Engine 3 alert pipeline.
+
 # 0.1.8
 
 - Add RLinear with reversible input normalization and an X0-only point-forecast profile for NLinear, DLinear and RLinear.
@@ -28,6 +40,12 @@
 - New ADA runs: 750 candidates /2250 fold fits at 25 trials per family/input/objective.
 
 # Changelog
+
+## 0.1.10
+
+- Add six independent MAC profiles with validated per-objective trial budgets and balanced input allocation.
+- Add encoder–decoder residuals over fixed and learned baselines and a global LightGBM forecaster.
+- Keep the MAD envelope and MAC 2 layouts. Use registered model definitions for capabilities, search, construction and fit.
 
 ## 0.1.4
 
